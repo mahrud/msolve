@@ -249,21 +249,26 @@ void sort_terms_qq(
   *hmp  = hm;
 }
 
-void import_input_data(
+/* Imports the coefficients of generators [start, stop) and links them to the
+ * monomials already stored in bs, sorting the terms of each generator into the
+ * monomial order.  Factored out of import_input_data so that the module input
+ * path in res_module.c can reuse it: only the monomials differ there, since
+ * they carry a component, while coefficients are handled identically.
+ * Returns the number of valid generators imported. */
+static len_t import_input_coefficients(
         bs_t *bs,
         md_t *st,
         const int32_t start,
         const int32_t stop,
         const int32_t *lens,
-        const int32_t *exps,
         const void *vcfs,
-        const int *invalid_gens
+        const int *invalid_gens,
+        const int32_t init_off
         )
 {
     int32_t i, j;
-    len_t k;
-    hm_t *hm;
-    len_t ctr = 0; /* ctr for valid input elements */
+    len_t ctr = 0;
+    int32_t off = init_off;
 
     cf8_t *cf8      =   NULL;
     cf16_t *cf16    =   NULL;
@@ -272,51 +277,9 @@ void import_input_data(
     int32_t *cfs_ff =   NULL;
     mpz_t **cfs_qq  =   NULL;
 
-    ht_t *ht = bs->ht;
+    ht_t *ht        = bs->ht;
+    const len_t fc  = st->fc;
 
-    int32_t off       = 0; /* offset in arrays */
-    int32_t init_off  = 0;
-    const len_t fc    = st->fc;
-
-    len_t ngens = stop - start;
-
-    for (i = 0; i < start; ++i) {
-        init_off +=  lens[i];
-    }
-
-    /* check basis size first */
-    /* check_enlarge_basis(bs, ngens_input, st); */
-    check_enlarge_basis(bs, ngens, st);
-
-    /* import monomials */
-    exp_t *e  = ht->ev[0]; /* use as temporary storage */
-    off = init_off;
-    for (i = start; i < stop; ++i) {
-        if (invalid_gens == NULL || invalid_gens[i] == 0) {
-            while (lens[i] >= ht->esz-ht->eld) {
-                enlarge_hash_table(ht);
-                e  = ht->ev[0]; /* reset e if enlarging */
-            }
-            hm  = (hm_t *)malloc(((unsigned long)lens[i]+OFFSET) * sizeof(hm_t));
-            bs->hm[ctr] = hm;
-
-            hm[COEFFS]  = ctr; /* link to matcf entry */
-            hm[PRELOOP] = (lens[i] % UNROLL); /* offset */
-            hm[LENGTH]  = lens[i]; /* length */
-
-            bs->red[ctr] = 0;
-
-            for (j = off; j < off+lens[i]; ++j) {
-                set_exponent_vector(e, exps, j, ht, st);
-                hm[j-off+OFFSET]  =   insert_in_hash_table(e, ht);
-            }
-            ctr++;
-        }
-        off +=  lens[i];
-    }
-    /* import coefficients */
-    off = init_off;
-    ctr = 0;
     switch (st->ff_bits) {
         case 8:
             cfs_ff  =   (int32_t *)vcfs;
@@ -406,6 +369,71 @@ void import_input_data(
         default:
             exit(1);
     }
+
+    return ctr;
+}
+
+void import_input_data(
+        bs_t *bs,
+        md_t *st,
+        const int32_t start,
+        const int32_t stop,
+        const int32_t *lens,
+        const int32_t *exps,
+        const void *vcfs,
+        const int *invalid_gens
+        )
+{
+    int32_t i, j;
+    len_t k;
+    hm_t *hm;
+    len_t ctr = 0; /* ctr for valid input elements */
+
+    ht_t *ht = bs->ht;
+
+    int32_t off       = 0; /* offset in arrays */
+    int32_t init_off  = 0;
+
+    len_t ngens = stop - start;
+
+    for (i = 0; i < start; ++i) {
+        init_off +=  lens[i];
+    }
+
+    /* check basis size first */
+    /* check_enlarge_basis(bs, ngens_input, st); */
+    check_enlarge_basis(bs, ngens, st);
+
+    /* import monomials */
+    exp_t *e  = ht->ev[0]; /* use as temporary storage */
+    off = init_off;
+    for (i = start; i < stop; ++i) {
+        if (invalid_gens == NULL || invalid_gens[i] == 0) {
+            while (lens[i] >= ht->esz-ht->eld) {
+                enlarge_hash_table(ht);
+                e  = ht->ev[0]; /* reset e if enlarging */
+            }
+            hm  = (hm_t *)malloc(((unsigned long)lens[i]+OFFSET) * sizeof(hm_t));
+            bs->hm[ctr] = hm;
+
+            hm[COEFFS]  = ctr; /* link to matcf entry */
+            hm[PRELOOP] = (lens[i] % UNROLL); /* offset */
+            hm[LENGTH]  = lens[i]; /* length */
+
+            bs->red[ctr] = 0;
+
+            for (j = off; j < off+lens[i]; ++j) {
+                set_exponent_vector(e, exps, j, ht, st);
+                hm[j-off+OFFSET]  =   insert_in_hash_table(e, ht);
+            }
+            ctr++;
+        }
+        off +=  lens[i];
+    }
+    /* import coefficients */
+    ctr = import_input_coefficients(
+            bs, st, start, stop, lens, vcfs, invalid_gens, init_off);
+
     /* maybe some input elements are invalid, so reset ngens here */
     ngens = ctr;
 
@@ -779,6 +807,15 @@ static inline int use_lex_order(
     return ht->ebl == 0 && ht->mo == 1;
 }
 
+/* A module hash table carries a component slot; its order refines the
+ * base ring order in ht->mo, so it is checked before the ring cases. */
+static inline int use_module_order(
+        const ht_t *ht
+        )
+{
+    return ht->cpos != 0;
+}
+
 static inline int use_17_bit_reduction(
         const uint32_t fc
         )
@@ -793,6 +830,9 @@ int initial_input_cmp(
         )
 {
     ht_t *ht = (ht_t *)htp;
+    if (use_module_order(ht)) {
+        return initial_input_cmp_mod(a, b, htp);
+    }
     if (use_block_order(ht)) {
         return initial_input_cmp_be(a, b, htp);
     }
@@ -809,6 +849,9 @@ int initial_gens_cmp(
         )
 {
     ht_t *ht = (ht_t *)htp;
+    if (use_module_order(ht)) {
+        return initial_gens_cmp_mod(a, b, htp);
+    }
     if (use_block_order(ht)) {
         return initial_gens_cmp_be(a, b, htp);
     }
@@ -824,6 +867,9 @@ int monomial_cmp(
         const ht_t *ht
         )
 {
+    if (use_module_order(ht)) {
+        return monomial_cmp_mod(a, b, ht);
+    }
     if (use_block_order(ht)) {
         return monomial_cmp_be(a, b, ht);
     }
@@ -840,6 +886,9 @@ int spair_cmp(
         )
 {
     ht_t *ht = (ht_t *)htp;
+    if (use_module_order(ht)) {
+        return spair_cmp_mod(a, b, htp);
+    }
     if (use_block_order(ht)) {
         return spair_cmp_be(a, b, htp);
     }
@@ -856,6 +905,9 @@ int hcm_cmp(
         )
 {
     ht_t *ht = (ht_t *)htp;
+    if (use_module_order(ht)) {
+        return hcm_cmp_pivots_mod(a, b, htp);
+    }
     if (use_block_order(ht)) {
         return hcm_cmp_pivots_be(a, b, htp);
     }

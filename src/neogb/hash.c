@@ -55,6 +55,12 @@ ht_t *initialize_basis_hash_table(
     ht_t *ht  = (ht_t *)malloc(sizeof(ht_t));
     ht->nv    = nv;
     ht->mo    = st->mo;
+    /* module data, see data.h; st->ncomp == 0 gives a plain ring table
+     * and every module code path stays switched off */
+    ht->ncomp   = st->ncomp;
+    ht->mord    = st->mord;
+    ht->cbase   = NULL;
+    ht->cshift  = NULL;
     /* generate map */
     ht->bpv = (len_t)((CHAR_BIT * sizeof(sdm_t)) / (unsigned long)nv);
     if (ht->bpv == 0) {
@@ -78,6 +84,10 @@ ht_t *initialize_basis_hash_table(
         ht->evl = nv + 2; /* store also degrees for both blocks, see
                            * data.h for more on exponent vector structure */
         ht->ebl = st->nev + 1; /* store also degree at first position */
+        if (ht->ncomp > 0) {
+            fprintf(ERRSTREAM, "Module monomials are not supported together "
+                    "with block elimination orders yet.\n");
+        }
         if (st->nev >= ht->ndv) {
             for (i = 1; i <= ht->ndv; ++i) {
                 ht->dv[i-1] = i;
@@ -92,6 +102,21 @@ ht_t *initialize_basis_hash_table(
             }
         }
 
+    }
+    /* append the component slot at the end of the exponent vector; ht->dv
+     * only ever addresses variable slots, so divisor masks are unaffected */
+    if (ht->ncomp > 0) {
+        ht->cpos    = ht->evl;
+        ht->evl     = ht->evl + 1;
+        /* components are 1-based, entry 0 is reserved for ring monomials */
+        ht->cshift  = (deg_t *)calloc(
+                (unsigned long)ht->ncomp + 1, sizeof(deg_t));
+        if (ht->mord == RES_MORD_SCHREYER) {
+            ht->cbase = (hm_t *)calloc(
+                    (unsigned long)ht->ncomp + 1, sizeof(hm_t));
+        }
+    } else {
+        ht->cpos = 0;
     }
     /* generate divmask map */
     ht->dm  = (sdm_t *)calloc(
@@ -143,6 +168,12 @@ ht_t *copy_hash_table(
     ht->ebl   = bht->ebl;
     ht->hsz   = bht->hsz;
     ht->esz   = bht->esz;
+    /* module data is shared by pointer, exactly like dm/dv/rn below */
+    ht->cpos    = bht->cpos;
+    ht->ncomp   = bht->ncomp;
+    ht->mord    = bht->mord;
+    ht->cbase   = bht->cbase;
+    ht->cshift  = bht->cshift;
 
     ht->hmap  = calloc(ht->hsz, sizeof(hi_t));
     memcpy(ht->hmap, bht->hmap, (unsigned long)ht->hsz * sizeof(hi_t));
@@ -193,6 +224,12 @@ ht_t *initialize_secondary_hash_table(
     ht->mo    = bht->mo;
     ht->evl   = bht->evl;
     ht->ebl   = bht->ebl;
+    /* module data is shared by pointer with the basis hash table */
+    ht->cpos    = bht->cpos;
+    ht->ncomp   = bht->ncomp;
+    ht->mord    = bht->mord;
+    ht->cbase   = bht->cbase;
+    ht->cshift  = bht->cshift;
 
     /* generate map */
     int32_t min = 3 > md->init_hts-5 ? 3 : md->init_hts-5;
@@ -247,6 +284,14 @@ void free_shared_hash_data(
         if (ht->dm) {
             free(ht->dm);
             ht->dm = NULL;
+        }
+        if (ht->cbase) {
+            free(ht->cbase);
+            ht->cbase = NULL;
+        }
+        if (ht->cshift) {
+            free(ht->cshift);
+            ht->cshift = NULL;
         }
     }
 }
@@ -308,6 +353,14 @@ void full_free_hash_table(
     if (ht->dm) {
       free(ht->dm);
       ht->dm = NULL;
+    }
+    if (ht->cbase) {
+      free(ht->cbase);
+      ht->cbase = NULL;
+    }
+    if (ht->cshift) {
+      free(ht->cshift);
+      ht->cshift = NULL;
     }
   }
   free(ht);
@@ -493,6 +546,15 @@ static inline hi_t check_monomial_division(
   const exp_t *const ea = ht->ev[a];
   const exp_t *const eb = ht->ev[b];
 
+  /* In a module hash table a divisor is either a ring monomial, which
+   * carries component 0, or a module monomial in the very same component.
+   * Without this the generic loop below would accept any divisor whose
+   * component index happens to be smaller. */
+  if (ht->cpos != 0
+          && eb[ht->cpos] != 0 && eb[ht->cpos] != ea[ht->cpos]) {
+      return 0;
+  }
+
   /* printf("! no sdm decision !\n"); */
   /* exponent check */
   for (i = 0; i < evl-1; i += 2) {
@@ -532,6 +594,12 @@ restart:
             continue;
         }
         const exp_t *const ea = ht->ev[a[j]];
+        /* see check_monomial_division: a module divisor must either be a
+         * ring monomial or sit in the same component */
+        if (ht->cpos != 0
+                && eb[ht->cpos] != 0 && eb[ht->cpos] != ea[ht->cpos]) {
+            continue;
+        }
         /* exponent check */
         for (i = 0; i < evl-1; i += 2) {
             if (ea[i] < eb[i] || ea[i+1] < eb[i+1]) {
@@ -1302,7 +1370,13 @@ static void reset_hash_table(
     st->rht_rtime  +=  rt1 - rt0;
 }
 
-/* computes lcm of a and b from ht1 and inserts it in ht2 */
+/* computes lcm of a and b from ht1 and inserts it in ht2
+ *
+ * In a module hash table two monomials in different components have no
+ * lcm and hence give no S-pair.  This is reported by returning 0, which
+ * is never a valid hash table index because ht->eld starts at 1 and slot
+ * 0 is the reserved scratch entry.  Callers must treat 0 as "no pair";
+ * insert_and_update_spairs does. */
 static inline hi_t get_lcm(
     const hi_t a,
     const hi_t b,
@@ -1318,6 +1392,30 @@ static inline hi_t get_lcm(
     exp_t etmp[ht1->evl];
     const len_t evl = ht1->evl;
     const len_t ebl = ht1->ebl;
+
+    if (ht1->cpos != 0) {
+        const len_t cpos  = ht1->cpos;
+        const exp_t comp  = ea[cpos];
+
+        if (comp != eb[cpos]) {
+            return 0;
+        }
+        for (i = 1; i < cpos; ++i) {
+            etmp[i] = ea[i] < eb[i] ? eb[i] : ea[i];
+        }
+        etmp[cpos] = comp;
+        /* the degree must skip the component slot and pick up the
+         * component's degree shift, see data.h */
+        etmp[DEG] = (exp_t)ht1->cshift[comp];
+        for (i = 1; i < cpos; ++i) {
+            etmp[DEG] = (exp_t)(etmp[DEG] + etmp[i]);
+        }
+#if PARALLEL_HASHING
+        return check_insert_in_hash_table(etmp, 0, ht2);
+#else
+        return insert_in_hash_table(etmp, ht2);
+#endif
+    }
 
     /* set degree(s), if ebl == 0, i.e. we do not have an elimination block
      * order then the second for loop is just not executed and the third one

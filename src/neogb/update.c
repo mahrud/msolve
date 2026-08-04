@@ -100,7 +100,16 @@ static void insert_and_update_spairs(
         pp[i].lcm   =  get_lcm(bs->hm[i][OFFSET], nch, bht, bht);
         pp[i].gen1  = i;
         pp[i].gen2  = bl;
-        if (bs->red[i] != 0) {
+        /* lcm == 0 means the two lead monomials sit in different
+         * components of the free module, so there is no S-pair; such
+         * entries are dropped in the compaction below just like the
+         * redundant ones. Note that the coprimality criterion below is
+         * correctly inert on module monomials: prime_monomials sees two
+         * nonzero component slots and never reports them as coprime,
+         * which is right, since Buchberger's first criterion is a
+         * statement about the ring and does not apply to module
+         * elements. */
+        if (pp[i].lcm == 0 || bs->red[i] != 0) {
             pp[i].deg   =   -1;
         } else {
             if (prime_monomials(bs->hm[pp[i].gen1][OFFSET], bs->hm[pp[i].gen2][OFFSET], bht)) {

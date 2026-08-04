@@ -528,6 +528,19 @@ start:
     if (i < lml) {
         const hm_t *b = bs->hm[lmps[i]];
         const exp_t * const f = evb[b[OFFSET]];
+        /* This open codes the divisibility test rather than calling
+         * check_monomial_division, so it needs the module rule of its
+         * own: a divisor is either a ring monomial, carrying component
+         * 0, or a module monomial in the very same component.  Without
+         * this the loop below only sees e[cpos] >= f[cpos] and happily
+         * accepts a reducer from an earlier component, producing a
+         * multiplier with a nonzero component and, through it, an
+         * unbounded cascade of ever higher components. */
+        if (bht->cpos != 0
+                && f[bht->cpos] != 0 && f[bht->cpos] != e[bht->cpos]) {
+            i++;
+            goto start;
+        }
         for (k=0; k < evl; ++k) {
             if (e[k] < f[k]) {
                 i++;

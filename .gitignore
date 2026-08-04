@@ -51,5 +51,6 @@ fglm_build_matrixn_nonradical-shape-31
 fglm_build_matrixn_radical-shape-31
 line_endings_support
 neogb_io
+neogb_res_selftest
 msolve-*.tar.gz
 msolve-*/

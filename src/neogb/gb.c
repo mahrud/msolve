@@ -34,6 +34,8 @@
 #include "sort_r.h"   /* special quicksort implementation */
 #include "hash.c"     /* hash table stuff */
 #include "order.c"    /* order and comparison procedures */
+#include "res_grading.c" /* gradings by a f.g. abelian group */
+#include "res_order.c"   /* monomial orders on a free module */
 #include "basis.c"    /* basis and polynomial handling */
 #include "la_ff_8.c"  /* finite field linear algebra (8 bit) */
 #include "la_ff_16.c" /* finite field linear algebra (16 bit) */
@@ -45,8 +47,8 @@
 #include "io.c"       /* input and output data handling */
 #include "engine.c"   /* global, shared parts of gb engine */
 #include "f4.c"       /* implemenation of f4 algorithm */
+#include "res_module.c"  /* Groebner bases of submodules of a free module */
 #include "sba.c"      /* implemenation of sba algorithm */
 #include "nf.c"       /* implemenation of normal form algorithm */
 #include "f4sat.c"    /* implemenation of saturation algorithm */
 #include "modular.c"  /* implemenation of modular Groebner for F4 */
-

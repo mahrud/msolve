@@ -98,7 +98,7 @@ struct hd_t
     deg_t deg;
 };
 
-/* 
+/*
  * Exponent vectors look the following for n variables:
  *
  * 1. If we use a non-block monomial order like DRL
@@ -114,7 +114,43 @@ struct hd_t
  *  evl will be nv + 1 + (ebl != 0) where ebl is the number
  *  of variables in the first variable block + 1 (for the degree of
  *  this block) if we use an elimination block order, 0 otherwise.
+ *
+ * 3. If the hash table represents monomials of a free module (needed for
+ *    module Groebner bases, Schreyer frames and free resolutions) then a
+ *    component slot is appended at the *end*:
+ * [deg, exp_v1, ..., exp_vn, comp]
+ * -> length is n+2, and evl-1 is the index of the component slot.
+ *
+ *  The slot is appended rather than prepended so that ev[DEG] stays at
+ *  index 0 and every existing degree computation is untouched; it is also
+ *  invisible to the short divisor masks, since those address variables
+ *  through the explicit index list ht->dv.
+ *
+ *  Components are 1-based: ev[cpos] == 0 marks a *ring* monomial, and the
+ *  components of the free module are 1, ..., ncomp.  Making 0 mean "no
+ *  component" is what lets a single divisibility test cover both "a ring
+ *  monomial divides a module monomial" and "a module monomial divides
+ *  another one in the same component"; with 0-based components the two
+ *  cases would be indistinguishable.  Arrays indexed by component
+ *  (cbase, cshift) therefore have ncomp+1 entries, with entry 0 reserved
+ *  for the ring.
+ *
+ *  Two invariants make the plain vector addition in the hash table remain
+ *  correct on module monomials:
+ *    - ring monomials always carry component 0, and a module monomial is
+ *      only ever multiplied by a ring monomial, so components add exactly;
+ *    - ev[DEG] holds the degree of the module monomial *including* the
+ *      degree shift of its component, so degrees add exactly as well.
  *  */
+
+/* Module monomial orderings.  These refine the base ring order in ht->mo
+ * and are only consulted when ht->cpos != 0. */
+typedef enum {
+    RES_MORD_SCHREYER = 0, /* compare monomials lifted along ht->cbase,
+                            * ties broken by component */
+    RES_MORD_POT      = 1, /* position over term */
+    RES_MORD_TOP      = 2  /* term over position */
+} res_mord_t;
 
 /* hash table data structure */
 typedef struct ht_t ht_t;
@@ -141,6 +177,18 @@ struct ht_t
     len_t bpv;    /* bits per variable in divmask */
     val_t *rn;    /* random numbers for hash generation */
     uint32_t rsd; /* seed for random number generator */
+    /* module data; cpos == 0 means this table holds ring monomials only
+     * and every module specific code path below is switched off */
+    len_t cpos;    /* index of the component slot in ev, 0 if none */
+    len_t ncomp;   /* number of components of the free module */
+    int32_t mord;  /* module ordering, see res_mord_t */
+    hm_t *cbase;   /* base monomial of each component for the Schreyer
+                    * order, as hash table indices into this same table;
+                    * length ncomp+1, entry 0 must be the monomial 1;
+                    * NULL unless mord == RES_MORD_SCHREYER */
+    deg_t *cshift; /* degree shift of each component, length ncomp+1 and
+                    * already folded into ev[DEG] of every monomial of
+                    * that component; entry 0 is always 0 */
 };
 
 /* S-pair types */
@@ -391,6 +439,10 @@ struct md_t
     uint32_t fc;
     int32_t nev; /* number of elimination variables */
     int32_t mo; /* monomial ordering: 0=DRL, 1=LEX*/
+    int32_t ncomp; /* number of components of the ambient free module,
+                    * 0 for an ideal computation in the ring itself */
+    int32_t mord;  /* module monomial ordering, see res_mord_t;
+                    * only used when ncomp > 0 */
     int32_t laopt;
     int32_t init_hts;
     int32_t nthrds;
