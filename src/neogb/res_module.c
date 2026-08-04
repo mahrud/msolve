@@ -255,6 +255,171 @@ static int64_t export_module_data(
     return nterms;
 }
 
+/* Everything the module entry points have in common: validate the input,
+ * build the meta data, import the presentation matrix and run F4.  On
+ * success the caller owns the returned basis, *stp, and the shared hash
+ * table data of the basis's hash table, and releases them with
+ *
+ *     free_shared_hash_data(gb->ht); free_basis(&gb); free(st);
+ *
+ * On failure NULL is returned, *stp is NULL, and everything this function
+ * allocated has been released.
+ *
+ * module_order is restricted to POT and TOP: the Schreyer order needs per
+ * component base monomials, which only the frame in res_frame.c can
+ * supply, and by then the Gröbner basis is already in hand. */
+static bs_t *module_gb_from_input(
+        md_t **stp,
+        const int32_t *lens,
+        const int32_t *exps,
+        const int32_t *comps,
+        const void *cfs,
+        const int32_t *row_degs,
+        const uint32_t field_char,
+        const int32_t mon_order,
+        const int32_t module_order,
+        const int32_t nr_vars,
+        const int32_t nr_rows,
+        const int32_t nr_gens,
+        const int32_t ht_size,
+        const int32_t nr_threads,
+        const int32_t max_nr_pairs,
+        const int32_t la_option,
+        const int32_t reduce_gb,
+        const int32_t info_level
+        )
+{
+    int32_t i, j;
+
+    *stp = NULL;
+
+    if (field_char == 0 || field_char >= ((uint32_t)1 << 31)) {
+        fprintf(ERRSTREAM, "Module Groebner bases need a prime field of "
+                "characteristic less than 2^31.\n");
+        return NULL;
+    }
+    if (nr_rows < 1 || nr_gens < 1 || nr_vars < 1) {
+        fprintf(ERRSTREAM, "Empty module input.\n");
+        return NULL;
+    }
+    if (module_order != RES_MORD_POT && module_order != RES_MORD_TOP) {
+        fprintf(ERRSTREAM, "Only position over term and term over position "
+                "are available here; the Schreyer order needs per component "
+                "base monomials that only the resolution engine can supply.\n");
+        return NULL;
+    }
+    if (mon_order != 0) {
+        fprintf(ERRSTREAM, "Module Groebner bases are only implemented for "
+                "the degree reverse lexicographic order.\n");
+        return NULL;
+    }
+
+    /* validate the components before anything is allocated */
+    int64_t nt = 0;
+    for (i = 0; i < nr_gens; ++i) {
+        if (lens[i] < 1) {
+            fprintf(ERRSTREAM, "Generator %d has no terms.\n", i);
+            return NULL;
+        }
+        nt += lens[i];
+    }
+    for (j = 0; j < nt; ++j) {
+        if (comps[j] < 1 || comps[j] > nr_rows) {
+            fprintf(ERRSTREAM, "Term %d has component %d, outside the range "
+                    "1 to %d.\n", j, comps[j], nr_rows);
+            return NULL;
+        }
+    }
+
+    md_t *st = allocate_meta_data();
+    if (st == NULL) {
+        return NULL;
+    }
+
+    int32_t elim_block_len = 0, nr_nf = 0, reset_ht = 0, use_signatures = 0;
+    int32_t pbm_file = 0, truncate_lifting = 0;
+    int32_t l_mon_order = mon_order, l_nr_vars = nr_vars, l_nr_gens = nr_gens;
+    int32_t l_ht_size = ht_size, l_nr_threads = nr_threads;
+    int32_t l_max_nr_pairs = max_nr_pairs, l_la_option = la_option;
+    int32_t l_reduce_gb = reduce_gb, l_info_level = info_level;
+    uint32_t l_field_char = field_char;
+
+    int *invalid_gens = NULL;
+    int res = validate_input_data(&invalid_gens, cfs, lens, &l_field_char,
+            &l_mon_order, &elim_block_len, &l_nr_vars, &l_nr_gens, &nr_nf,
+            &l_ht_size, &l_nr_threads, &l_max_nr_pairs, &reset_ht,
+            &l_la_option, &use_signatures, &l_reduce_gb, &truncate_lifting,
+            &l_info_level);
+    if (res == -1) {
+        free(invalid_gens);
+        free(st);
+        return NULL;
+    }
+    if (check_and_set_meta_data(st, lens, exps, cfs, invalid_gens,
+                l_field_char, l_mon_order, elim_block_len, l_nr_vars,
+                l_nr_gens, nr_nf, l_ht_size, l_nr_threads, l_max_nr_pairs,
+                reset_ht, l_la_option, use_signatures, l_reduce_gb, pbm_file,
+                truncate_lifting, l_info_level)) {
+        free(invalid_gens);
+        free(st);
+        return NULL;
+    }
+
+    /* this is what makes the hash table a module one; it has to happen
+     * before initialize_basis, which is where the table is built */
+    st->ncomp = nr_rows;
+    st->mord  = module_order;
+
+    bs_t *bs  = initialize_basis(st, NULL);
+    ht_t *bht = bs->ht;
+
+    /* Degree shifts of the ambient free module.  msolve keeps degrees in a
+     * uint16_t, so they are normalized to start at zero; a global shift of
+     * all row degrees changes neither the module nor its Groebner basis,
+     * only the absolute degrees, which the caller can put back. */
+    if (row_degs != NULL) {
+        int32_t mn = row_degs[0];
+        for (i = 1; i < nr_rows; ++i) {
+            if (row_degs[i] < mn) {
+                mn = row_degs[i];
+            }
+        }
+        for (i = 0; i < nr_rows; ++i) {
+            bht->cshift[i+1] = (deg_t)(row_degs[i] - mn);
+        }
+    }
+
+    import_module_input_data(bs, st, 0, st->ngens_input,
+            lens, exps, comps, cfs, invalid_gens);
+
+    print_initial_statistics(VERBSTREAM, st);
+
+    calculate_divmask(bht);
+
+    sort_r(bs->hm, (unsigned long)bs->ld, sizeof(hm_t *),
+            initial_input_cmp, bht);
+    normalize_initial_basis(bs, st->fc);
+
+    int32_t err = 0;
+    bs_t *gb = core_gba(bs, st, &err, (len_t)field_char);
+
+    free(invalid_gens);
+
+    if (gb == NULL || err > 0) {
+        fprintf(ERRSTREAM, "Module Groebner basis computation failed.\n");
+        if (gb != NULL) {
+            free_shared_hash_data(gb->ht);
+            free_basis(&gb);
+        }
+        free(st);
+        return NULL;
+    }
+
+    *stp = st;
+
+    return gb;
+}
+
 void free_module_f4_result_data(
         void (*freep) (void *),
         int32_t **blen,
@@ -307,8 +472,8 @@ int64_t export_module_f4(
         const int32_t info_level
         )
 {
-    int32_t i, j;
     int64_t nterms = 0;
+    md_t *st = NULL;
 
     *bld   = 0;
     *blen  = NULL;
@@ -316,130 +481,158 @@ int64_t export_module_f4(
     *bcomp = NULL;
     *bcf   = NULL;
 
-    if (field_char == 0 || field_char >= ((uint32_t)1 << 31)) {
-        fprintf(ERRSTREAM, "Module Groebner bases need a prime field of "
-                "characteristic less than 2^31.\n");
-        return 0;
-    }
-    if (nr_rows < 1 || nr_gens < 1 || nr_vars < 1) {
-        fprintf(ERRSTREAM, "Empty module input.\n");
-        return 0;
-    }
-    if (module_order != RES_MORD_POT && module_order != RES_MORD_TOP) {
-        fprintf(ERRSTREAM, "Only position over term and term over position "
-                "are available here; the Schreyer order needs per component "
-                "base monomials that only the resolution engine can supply.\n");
-        return 0;
-    }
-    if (mon_order != 0) {
-        fprintf(ERRSTREAM, "Module Groebner bases are only implemented for "
-                "the degree reverse lexicographic order.\n");
+    bs_t *gb = module_gb_from_input(&st, lens, exps, comps, cfs, row_degs,
+            field_char, mon_order, module_order, nr_vars, nr_rows, nr_gens,
+            ht_size, nr_threads, max_nr_pairs, la_option, reduce_gb,
+            info_level);
+    if (gb == NULL) {
         return 0;
     }
 
-    /* validate the components before anything is allocated */
-    int64_t nt = 0;
-    for (i = 0; i < nr_gens; ++i) {
-        if (lens[i] < 1) {
-            fprintf(ERRSTREAM, "Generator %d has no terms.\n", i);
-            return 0;
-        }
-        nt += lens[i];
-    }
-    for (j = 0; j < nt; ++j) {
-        if (comps[j] < 1 || comps[j] > nr_rows) {
-            fprintf(ERRSTREAM, "Term %d has component %d, outside the range "
-                    "1 to %d.\n", j, comps[j], nr_rows);
-            return 0;
-        }
-    }
-
-    md_t *st = allocate_meta_data();
-    if (st == NULL) {
-        return 0;
-    }
-
-    int32_t fchar = (int32_t)field_char;
-    int32_t elim_block_len = 0, nr_nf = 0, reset_ht = 0, use_signatures = 0;
-    int32_t pbm_file = 0, truncate_lifting = 0;
-    int32_t l_mon_order = mon_order, l_nr_vars = nr_vars, l_nr_gens = nr_gens;
-    int32_t l_ht_size = ht_size, l_nr_threads = nr_threads;
-    int32_t l_max_nr_pairs = max_nr_pairs, l_la_option = la_option;
-    int32_t l_reduce_gb = reduce_gb, l_info_level = info_level;
-    uint32_t l_field_char = field_char;
-
-    int *invalid_gens = NULL;
-    int res = validate_input_data(&invalid_gens, cfs, lens, &l_field_char,
-            &l_mon_order, &elim_block_len, &l_nr_vars, &l_nr_gens, &nr_nf,
-            &l_ht_size, &l_nr_threads, &l_max_nr_pairs, &reset_ht,
-            &l_la_option, &use_signatures, &l_reduce_gb, &truncate_lifting,
-            &l_info_level);
-    if (res == -1) {
-        free(invalid_gens);
-        free(st);
-        return 0;
-    }
-    if (check_and_set_meta_data(st, lens, exps, cfs, invalid_gens,
-                l_field_char, l_mon_order, elim_block_len, l_nr_vars,
-                l_nr_gens, nr_nf, l_ht_size, l_nr_threads, l_max_nr_pairs,
-                reset_ht, l_la_option, use_signatures, l_reduce_gb, pbm_file,
-                truncate_lifting, l_info_level)) {
-        free(invalid_gens);
-        free(st);
-        return 0;
-    }
-
-    /* this is what makes the hash table a module one; it has to happen
-     * before initialize_basis, which is where the table is built */
-    st->ncomp = nr_rows;
-    st->mord  = module_order;
-
-    bs_t *bs  = initialize_basis(st, NULL);
-    ht_t *bht = bs->ht;
-
-    /* Degree shifts of the ambient free module.  msolve keeps degrees in a
-     * uint16_t, so they are normalized to start at zero; a global shift of
-     * all row degrees changes neither the module nor its Groebner basis,
-     * only the absolute degrees, which the caller can put back. */
-    if (row_degs != NULL) {
-        int32_t mn = row_degs[0];
-        for (i = 1; i < nr_rows; ++i) {
-            if (row_degs[i] < mn) {
-                mn = row_degs[i];
-            }
-        }
-        for (i = 0; i < nr_rows; ++i) {
-            bht->cshift[i+1] = (deg_t)(row_degs[i] - mn);
-        }
-    }
-
-    import_module_input_data(bs, st, 0, st->ngens_input,
-            lens, exps, comps, cfs, invalid_gens);
-
-    print_initial_statistics(VERBSTREAM, st);
-
-    calculate_divmask(bht);
-
-    sort_r(bs->hm, (unsigned long)bs->ld, sizeof(hm_t *),
-            initial_input_cmp, bht);
-    normalize_initial_basis(bs, st->fc);
-
-    int32_t err = 0;
-    bs_t *gb = core_gba(bs, st, &err, (len_t)fchar);
-
-    if (gb == NULL || err > 0) {
-        fprintf(ERRSTREAM, "Module Groebner basis computation failed.\n");
-        free(invalid_gens);
-        return 0;
-    }
+    ht_t *bht = gb->ht;
 
     nterms = export_module_data(
             bld, blen, bexp, bcomp, bcf, mallocp, gb, bht, st);
 
     free_shared_hash_data(bht);
     free_basis(&gb);
-    free(invalid_gens);
     free(st);
 
     return nterms;
+}
+
+/* --------------------------------------------------------------------- *
+ *  Schreyer frame of a presentation matrix
+ * --------------------------------------------------------------------- */
+
+void free_module_frame_result_data(
+        void (*freep) (void *),
+        int32_t **betti
+        )
+{
+    if (*betti != NULL) {
+        (*freep)(*betti);
+        *betti = NULL;
+    }
+}
+
+int64_t export_module_frame(
+        void *(*mallocp) (size_t),
+        int32_t *nlevels,
+        int32_t *maxdeg,
+        int32_t **betti,
+        const int32_t *lens,
+        const int32_t *exps,
+        const int32_t *comps,
+        const void *cfs,
+        const int32_t *row_degs,
+        const uint32_t field_char,
+        const int32_t mon_order,
+        const int32_t module_order,
+        const int32_t nr_vars,
+        const int32_t nr_rows,
+        const int32_t nr_gens,
+        const int32_t max_level,
+        const int32_t ht_size,
+        const int32_t nr_threads,
+        const int32_t max_nr_pairs,
+        const int32_t la_option,
+        const int32_t info_level
+        )
+{
+    int32_t i;
+    int64_t nelts = 0;
+    md_t *st      = NULL;
+
+    *nlevels = 0;
+    *maxdeg  = 0;
+    *betti   = NULL;
+
+    /* The frame is read off the lead terms of a *reduced* basis, which are
+     * the minimal generators of the module of lead terms; a non-reduced
+     * basis would carry redundant elements into level 1 and inflate every
+     * level above it. */
+    bs_t *gb = module_gb_from_input(&st, lens, exps, comps, cfs, row_degs,
+            field_char, mon_order, module_order, nr_vars, nr_rows, nr_gens,
+            ht_size, nr_threads, max_nr_pairs, la_option, 1 /* reduce */,
+            info_level);
+    if (gb == NULL) {
+        return 0;
+    }
+
+    ht_t *bht = gb->ht;
+
+    /* Multigraded frames are M6; here the grading is the standard one and
+     * the row degrees supply the only shifts, matching bht->cshift. */
+    res_dgrp_t *grp = res_dgrp_new_standard(nr_vars);
+    int32_t *rowmd  = (int32_t *)calloc(
+            (unsigned long)nr_rows, sizeof(int32_t));
+    res_frame_t *f  = grp != NULL ? res_frame_new(grp, st, max_level) : NULL;
+
+    if (grp == NULL || rowmd == NULL || f == NULL) {
+        fprintf(ERRSTREAM, "Could not set up the Schreyer frame.\n");
+        goto cleanup;
+    }
+    for (i = 0; i < nr_rows; ++i) {
+        rowmd[i] = (int32_t)bht->cshift[i+1];
+    }
+
+    if (res_frame_init(f, gb, bht, rowmd)) {
+        goto cleanup;
+    }
+    nelts = res_frame_complete(f);
+    if (nelts < 0 || res_frame_verify(f)) {
+        nelts = 0;
+        goto cleanup;
+    }
+
+    /* Tabulate into plain memory first: mallocp comes without a matching
+     * free, so nothing allocated with it may be abandoned on a failure
+     * path.  The caller only ever sees a table that is already known
+     * good. */
+    const deg_t mxd = res_frame_max_hdeg(f);
+    if (mxd < 0) {
+        fprintf(ERRSTREAM, "A frame has a negative maximum degree.\n");
+        nelts = 0;
+        goto cleanup;
+    }
+    const size_t nrows = (size_t)f->nlv;
+    const size_t ncols = (size_t)mxd + 1;
+    if (ncols > SIZE_MAX / sizeof(int32_t)
+            || nrows > SIZE_MAX / (ncols * sizeof(int32_t))) {
+        fprintf(ERRSTREAM, "The frame rank table is too large to allocate.\n");
+        nelts = 0;
+        goto cleanup;
+    }
+    const size_t tsz = nrows * ncols * sizeof(int32_t);
+    int32_t *tmp = (int32_t *)malloc(tsz);
+    if (tmp == NULL || res_frame_betti(f, tmp, mxd) != nelts) {
+        fprintf(ERRSTREAM, "Frame ranks do not add up to the frame size.\n");
+        free(tmp);
+        nelts = 0;
+        goto cleanup;
+    }
+
+    int32_t *tab = (int32_t *)(*mallocp)(tsz);
+    if (tab == NULL) {
+        free(tmp);
+        nelts = 0;
+        goto cleanup;
+    }
+    memcpy(tab, tmp, tsz);
+    free(tmp);
+
+    *nlevels = (int32_t)f->nlv;
+    *maxdeg  = (int32_t)mxd;
+    *betti   = tab;
+
+cleanup:
+    res_frame_free(&f);
+    res_dgrp_free(&grp);
+    free(rowmd);
+    free_shared_hash_data(bht);
+    free_basis(&gb);
+    free(st);
+
+    return nelts;
 }

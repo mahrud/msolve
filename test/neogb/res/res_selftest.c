@@ -624,6 +624,300 @@ static void res_test_module_gb_rejects_bad_input(
 }
 
 /* --------------------------------------------------------------------- *
+ *  Schreyer frames
+ *
+ *  Every reference table below was read off Macaulay2's
+ *
+ *      betti res(M, Strategy => Nonminimal)
+ *
+ *  over the same prime, which is the resolution whose ranks the frame
+ *  predicts.  They are written as (level, degree, rank) triples, one per
+ *  nonzero entry, terminated by a negative level; Macaulay2 prints the
+ *  same numbers with the rows indexed by the slanted degree, degree minus
+ *  level. */
+
+static void res_check_frame(
+        const char *what,
+        const int32_t *lens,
+        const int32_t *exps,
+        const int32_t *comps,
+        const int32_t *cfs_src,
+        const int32_t *row_degs,
+        const int32_t nv,
+        const int32_t nrows,
+        const int32_t ngens,
+        const int32_t max_level,
+        const int32_t *ref
+        )
+{
+    int32_t i, l, d;
+
+    int32_t nterms = 0;
+    for (i = 0; i < ngens; ++i) {
+        nterms += lens[i];
+    }
+    /* msolve reduces the coefficient array in place */
+    int32_t *cfs = (int32_t *)malloc((unsigned long)nterms * sizeof(int32_t));
+    memcpy(cfs, cfs_src, (unsigned long)nterms * sizeof(int32_t));
+
+    int32_t nlv = 0, maxdeg = 0, *betti = NULL;
+    const int64_t nelts = export_module_frame(malloc, &nlv, &maxdeg, &betti,
+            lens, exps, comps, cfs, row_degs, 32003, 0 /* drl */,
+            RES_MORD_POT, nv, nrows, ngens, max_level,
+            12 /* ht size */, 1 /* threads */, 0 /* max pairs */,
+            2 /* la */, 0 /* info */);
+
+    int64_t rtotal = 0;
+    int32_t rlevels = 0;
+    for (i = 0; ref[i] >= 0; i += 3) {
+        rtotal += ref[i+2];
+        if (ref[i] + 1 > rlevels) {
+            rlevels = ref[i] + 1;
+        }
+    }
+
+    RES_CHECK(nelts == rtotal && betti != NULL, what);
+    if (betti == NULL || nelts != rtotal) {
+        free(cfs);
+        free_module_frame_result_data(free, &betti);
+        return;
+    }
+    RES_CHECK(nlv == rlevels, "the frame has the expected number of levels");
+
+    /* every reference entry is present, and nothing else is */
+    int ok = nlv == rlevels;
+    for (i = 0; ref[i] >= 0 && ok; i += 3) {
+        if (ref[i+1] > maxdeg
+                || betti[ref[i]*(maxdeg+1) + ref[i+1]] != ref[i+2]) {
+            ok = 0;
+        }
+    }
+    int64_t seen = 0;
+    for (l = 0; l < nlv; ++l) {
+        for (d = 0; d <= maxdeg; ++d) {
+            seen += betti[l*(maxdeg+1) + d];
+        }
+    }
+    RES_CHECK(ok && seen == rtotal, "the frame ranks match their reference "
+            "Macaulay2 nonminimal Betti table");
+
+    /* Hilbert's syzygy theorem: a frame over nv variables cannot reach
+     * past level nv, since it resolves a module of lead terms */
+    RES_CHECK(nlv <= nv + 1, "the frame stops by level nv");
+
+    free(cfs);
+    free_module_frame_result_data(free, &betti);
+}
+
+/* The Koszul complex, the one case where the frame is forced: the lead
+ * terms are the variables themselves. */
+static void res_test_frame_koszul(
+        void
+        )
+{
+    const int32_t lens[3]  = {1, 1, 1};
+    const int32_t exps[9]  = {1,0,0,  0,1,0,  0,0,1};
+    const int32_t cfs[3]   = {1, 1, 1};
+    const int32_t comps[3] = {1, 1, 1};
+    const int32_t ref[]    = {
+        0,0,1,  1,1,3,  2,2,3,  3,3,1,  -1
+    };
+
+    res_check_frame("the Koszul frame of (x,y,z) has 1+3+3+1 elements",
+            lens, exps, comps, cfs, NULL, 3, 1, 3, 0, ref);
+}
+
+/* The Hilbert-Burch case: the Groebner basis is already a minimal
+ * generating set, so the frame is the minimal resolution. */
+static void res_test_frame_twisted_cubic(
+        void
+        )
+{
+    const int32_t lens[3]  = {2, 2, 2};
+    const int32_t exps[24] = {
+        1,0,1,0,  0,2,0,0,   /* xz - y^2 */
+        1,0,0,1,  0,1,1,0,   /* xw - yz  */
+        0,1,0,1,  0,0,2,0    /* yw - z^2 */
+    };
+    const int32_t cfs[6]   = {1, -1, 1, -1, 1, -1};
+    const int32_t comps[6] = {1, 1, 1, 1, 1, 1};
+    const int32_t ref[]    = {
+        0,0,1,  1,2,3,  2,3,2,  -1
+    };
+
+    res_check_frame("the twisted cubic frame is its Hilbert-Burch resolution",
+            lens, exps, comps, cfs, NULL, 4, 1, 3, 0, ref);
+}
+
+/* A genuinely nonminimal frame: three quadrics that form a complete
+ * intersection, whose minimal resolution is 1,3,3,1 in degrees 0,2,4,6
+ * while the frame is 1,6,8,3.  This is the case that would silently pass
+ * if the frame merely reproduced minimal Betti numbers. */
+static void res_test_frame_nonminimal(
+        void
+        )
+{
+    const int32_t lens[3]  = {2, 2, 2};
+    const int32_t exps[18] = {
+        2,0,0,  0,1,1,   /* x^2 + yz */
+        0,2,0,  1,0,1,   /* y^2 + xz */
+        0,0,2,  1,1,0    /* z^2 + xy */
+    };
+    const int32_t cfs[6]   = {1, 1, 1, 1, 1, 1};
+    const int32_t comps[6] = {1, 1, 1, 1, 1, 1};
+    const int32_t ref[]    = {
+        0,0,1,
+        1,2,3,  1,3,2,  1,4,1,
+        2,3,2,  2,4,4,  2,5,2,
+        3,5,2,  3,6,1,
+        -1
+    };
+
+    res_check_frame("a complete intersection of three quadrics has the "
+            "nonminimal frame 1,6,8,3",
+            lens, exps, comps, cfs, NULL, 3, 1, 3, 0, ref);
+}
+
+/* Discriminating test for the within-block storage order.  For
+ * (x^2, xy, y^3) the ascending order gives the minimal resolution 1,3,2,
+ * and the descending one gives 1,3,3,1 -- a valid frame, but one level
+ * longer than the projective dimension.  Flipping res_frame_cmp_mono_asc
+ * fails this check and passes every other frame test in this file. */
+static void res_test_frame_block_order(
+        void
+        )
+{
+    const int32_t lens[3]  = {1, 1, 1};
+    const int32_t exps[9]  = {2,0,0,  1,1,0,  0,3,0};
+    const int32_t cfs[3]   = {1, 1, 1};
+    const int32_t comps[3] = {1, 1, 1};
+    const int32_t ref[]    = {
+        0,0,1,  1,2,2,  1,3,1,  2,3,1,  2,4,1,  -1
+    };
+
+    res_check_frame("(x^2, xy, y^3) has the short frame 1,3,2, so blocks "
+            "are ordered ascendingly",
+            lens, exps, comps, cfs, NULL, 3, 1, 3, 0, ref);
+}
+
+/* A rank two module rather than an ideal: the cokernel of the
+ * catalecticant, whose level 0 already has two elements. */
+static void res_test_frame_module(
+        void
+        )
+{
+    const int32_t lens[3]  = {2, 2, 2};
+    const int32_t exps[24] = {
+        1,0,0,0,  0,1,0,0,   /* (x,y) */
+        0,1,0,0,  0,0,1,0,   /* (y,z) */
+        0,0,1,0,  0,0,0,1    /* (z,w) */
+    };
+    const int32_t cfs[6]   = {1, 1, 1, 1, 1, 1};
+    const int32_t comps[6] = {1, 2, 1, 2, 1, 2};
+    const int32_t rd[2]    = {0, 0};
+    const int32_t ref[]    = {
+        0,0,2,
+        1,1,3,  1,2,3,
+        2,2,3,  2,3,2,
+        3,3,1,
+        -1
+    };
+
+    res_check_frame("the catalecticant cokernel has the frame 2,6,5,1",
+            lens, exps, comps, cfs, rd, 4, 2, 3, 0, ref);
+}
+
+/* Degree shifts of the ambient free module have to reach the frame, not
+ * just the Groebner basis: the columns of {{x^2,y^2},{z,w}} are
+ * homogeneous only because the second row sits in degree one.  Getting
+ * the shift wrong moves half the table without changing any rank. */
+static void res_test_frame_row_degrees(
+        void
+        )
+{
+    const int32_t lens[2]  = {2, 2};
+    const int32_t exps[16] = {
+        2,0,0,0,  0,0,1,0,   /* (x^2, z) */
+        0,2,0,0,  0,0,0,1    /* (y^2, w) */
+    };
+    const int32_t cfs[4]   = {1, 1, 1, 1};
+    const int32_t comps[4] = {1, 2, 1, 2};
+    const int32_t rd[2]    = {0, 1};
+    const int32_t ref[]    = {
+        0,0,1,  0,1,1,
+        1,2,2,  1,4,1,
+        2,4,1,
+        -1
+    };
+
+    res_check_frame("row degrees shift the frame of coker {{x2,y2},{z,w}}",
+            lens, exps, comps, cfs, rd, 4, 2, 2, 0, ref);
+}
+
+/* Truncating at a level must give exactly the head of the full frame. */
+static void res_test_frame_truncation(
+        void
+        )
+{
+    const int32_t lens[3]  = {1, 1, 1};
+    const int32_t exps[9]  = {1,0,0,  0,1,0,  0,0,1};
+    const int32_t cfs[3]   = {1, 1, 1};
+    const int32_t comps[3] = {1, 1, 1};
+    const int32_t ref[]    = {
+        0,0,1,  1,1,3,  2,2,3,  -1
+    };
+
+    res_check_frame("truncating the Koszul frame at level 2 keeps 1,3,3",
+            lens, exps, comps, cfs, NULL, 3, 1, 3, 2, ref);
+}
+
+static void res_test_frame_rejects_bad_input(
+        void
+        )
+{
+    const int32_t lens[1]  = {1};
+    const int32_t exps[3]  = {1, 0, 0};
+    int32_t cfs[1]         = {1};
+    const int32_t comps[1] = {1};
+
+    int32_t nlv = 0, maxdeg = 0, *betti = NULL;
+
+    if (res_st_verbose > 0) {
+        fprintf(VERBSTREAM,
+                "res_selftest: two frame input errors are expected next\n");
+    }
+    RES_CHECK(export_module_frame(malloc, &nlv, &maxdeg, &betti,
+                lens, exps, comps, cfs, NULL, 32003, 0, RES_MORD_SCHREYER,
+                3, 1, 1, 0, 12, 1, 0, 2, 0) == 0,
+            "the Schreyer order is refused as an input order to the frame");
+    RES_CHECK(betti == NULL && nlv == 0,
+            "a rejected frame call allocates nothing");
+
+    RES_CHECK(export_module_frame(malloc, &nlv, &maxdeg, &betti,
+                lens, exps, comps, cfs, NULL, 0 /* char 0 */, 0,
+                RES_MORD_POT, 3, 1, 1, 0, 12, 1, 0, 2, 0) == 0,
+            "characteristic zero is refused by the frame");
+}
+
+static void res_test_frame_rejects_exponent_overflow(
+        void
+        )
+{
+    const int32_t lens[2]  = {1, 1};
+    const int32_t exps[4]  = {40000, 0,  0, 40000};
+    int32_t cfs[2]         = {1, 1};
+    const int32_t comps[2] = {1, 1};
+    int32_t nlv = 0, maxdeg = 0, *betti = NULL;
+
+    RES_CHECK(export_module_frame(malloc, &nlv, &maxdeg, &betti,
+                lens, exps, comps, cfs, NULL, 32003, 0, RES_MORD_POT,
+                2, 1, 2, 0, 12, 1, 0, 2, 0) == 0,
+            "a lifted monomial exceeding the exponent representation is refused");
+    RES_CHECK(betti == NULL && nlv == 0,
+            "exponent overflow publishes no partial frame");
+}
+
+/* --------------------------------------------------------------------- *
  *  Entry point
  * --------------------------------------------------------------------- */
 
@@ -647,6 +941,15 @@ int main(void)
     res_test_module_gb_rank_two();
     res_test_classical_resolutions();
     res_test_module_gb_rejects_bad_input();
+    res_test_frame_koszul();
+    res_test_frame_twisted_cubic();
+    res_test_frame_nonminimal();
+    res_test_frame_block_order();
+    res_test_frame_module();
+    res_test_frame_row_degrees();
+    res_test_frame_truncation();
+    res_test_frame_rejects_bad_input();
+    res_test_frame_rejects_exponent_overflow();
 
     if (verbose > 0) {
         fprintf(VERBSTREAM, "res_selftest: %d checks, %d failures\n",

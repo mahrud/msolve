@@ -175,6 +175,153 @@ deg_t res_heft_of_exponents(
         );
 
 /* --------------------------------------------------------------------- *
+ *  Schreyer frames
+ *
+ *  The frame is the skeleton of a free resolution: the lead terms of
+ *  every differential, and nothing else.  Schreyer's theorem determines
+ *  the lead terms at level i+1 from those at level i, so the whole thing
+ *  is combinatorics -- not one field operation is performed here.
+ *
+ *  Level 0 is the ambient free module R^ncomp, level 1 is the Gröbner
+ *  basis of the input submodule, and level i+1 is obtained from level i
+ *  as follows.  Write the elements of level i as m_k e_{up(k)}, with m_k a
+ *  ring monomial.  Schreyer's theorem says the lead terms of the syzygies
+ *  are the monomials (lcm(m_k,m_l)/m_k) e_k for l != k with up(l) == up(k),
+ *  the larger of the two indices carrying the lead term.  For fixed k the
+ *  ring monomials so obtained generate the ideal quotient
+ *
+ *      J_k = ( <m_l : up(l) == up(k), l < k> : m_k ),
+ *
+ *  and the level i+1 elements sitting over k are exactly its minimal
+ *  generators.  "l < k" is the storage index order, which is also the tie
+ *  break of the Schreyer order, so the two are consistent by construction.
+ *
+ *  Storage order within a level is (up ascending, own monomial ascending).
+ *  The elements over a given parent are therefore contiguous, which is what
+ *  makes the ideal quotient above a scan of one block, and within a block
+ *  the order is the Schreyer order, since all of its elements share the
+ *  same lift below.
+ *
+ *  Only the within-block order is visible in the result: elements in
+ *  different blocks never pair up, so the number and the degrees of the
+ *  frame elements do not depend on how the blocks themselves are arranged.
+ *  The direction of the within-block order, on the other hand, changes the
+ *  frame -- every direction gives a valid one, but ascending gives the
+ *  small one, and is what Macaulay2 uses; see res_frame.c.
+ * --------------------------------------------------------------------- */
+
+typedef struct res_felt_t res_felt_t;
+struct res_felt_t
+{
+    hm_t    mono;   /* own ring monomial, in the frame hash table       */
+    hm_t    total;  /* mono lifted all the way to level 0, same table   */
+    int32_t up;     /* index of the parent at the previous level,
+                     * -1 at level 0                                    */
+    int32_t root;   /* 1-based component of R^ncomp this element lifts
+                     * to; constant along the chain of parents          */
+    deg_t   hdeg;   /* heft degree, component shifts included           */
+    hl_t    mdeg;   /* index of the multidegree in the level's pool     */
+};
+
+/* total is what makes a Schreyer comparison at any level cost one ring
+ * monomial comparison: comparing u*e_a with v*e_b is comparing the ring
+ * monomials u*total(a) and v*total(b), and, if those agree and the two
+ * elements lift to the same component of R^ncomp, the indices a and b,
+ * larger index being the larger monomial.  Without it every comparison
+ * would walk the chain of parents. */
+
+typedef struct res_level_t res_level_t;
+struct res_level_t
+{
+    res_felt_t  *elts;
+    len_t        ld;    /* number of elements            */
+    len_t        sz;    /* number of elements allocated  */
+    res_dpool_t *degs;  /* one multidegree per element   */
+};
+
+typedef struct res_frame_t res_frame_t;
+struct res_frame_t
+{
+    res_level_t      *lv;     /* lv[0 .. maxlv]                        */
+    len_t             nlv;    /* number of levels built, so lv[0,nlv)  */
+    len_t             maxlv;  /* highest level index that may be built */
+    ht_t             *ht;     /* ring monomials of the frame; a plain
+                               * table, the component lives in up      */
+    const res_dgrp_t *grp;
+    len_t             nv;
+    len_t             ncomp;  /* rank of the ambient free module       */
+    int               bad;    /* set once a level could not be built;
+                               * a truncated frame must never be read
+                               * as a complete one                     */
+};
+
+/* md supplies the number of variables, the ring order and the initial
+ * hash table size; a private ring hash table is built from it.  Levels
+ * 0 to maxlevel may be built; pass maxlevel <= 0 for the number of
+ * variables, which by Hilbert's syzygy theorem is always enough. */
+res_frame_t *res_frame_new(
+        const res_dgrp_t *grp,
+        const md_t *md,
+        const int32_t maxlevel
+        );
+
+void res_frame_free(
+        res_frame_t **fp
+        );
+
+/* Fills levels 0 and 1 from a module Gröbner basis and the module hash
+ * table it lives in.  row_mdegs holds the multidegrees of the generators
+ * of R^ncomp, ncomp * grp->len int32 slots with component i at offset
+ * i*grp->len; NULL is read as all zero.  Heft degrees come from
+ * bht->cshift, which is what the Gröbner basis itself was graded by.
+ * Returns 0 on success. */
+int res_frame_init(
+        res_frame_t *f,
+        const bs_t * const gb,
+        const ht_t * const bht,
+        const int32_t *row_mdegs
+        );
+
+/* Builds one more level from the last one; returns the number of elements
+ * added, which is 0 exactly when the frame is complete. */
+len_t res_frame_next_level(
+        res_frame_t *f
+        );
+
+/* Repeats res_frame_next_level until a level comes out empty or maxlv is
+ * reached.  Returns the total number of frame elements, or -1 if a level
+ * could not be built, in which case the frame is truncated at an
+ * arbitrary point and its ranks mean nothing. */
+int64_t res_frame_complete(
+        res_frame_t *f
+        );
+
+/* Checks the invariants the rest of the engine reads the frame through:
+ * every element's lifted monomial really is its own times its parent's,
+ * it lifts to the same component of R^ncomp as its parent, its heft
+ * degree is its parent's plus its own, and each level is grouped by
+ * parent.  Returns the number of violations, so 0 means the frame is
+ * sound.  Cheap -- the lift is a hash lookup of a monomial the frame
+ * already inserted -- so it runs on every frame rather than under a
+ * debug flag. */
+int res_frame_verify(
+        const res_frame_t * const f
+        );
+
+deg_t res_frame_max_hdeg(
+        const res_frame_t * const f
+        );
+
+/* Writes the frame ranks into tab, which must have f->nlv * (maxdeg+1)
+ * int32 entries: tab[i*(maxdeg+1) + d] is the number of level i elements
+ * of heft degree d.  Returns the total number of frame elements. */
+int64_t res_frame_betti(
+        const res_frame_t * const f,
+        int32_t *tab,
+        const deg_t maxdeg
+        );
+
+/* --------------------------------------------------------------------- *
  *  Gröbner bases of submodules of a free module
  *
  *  export_module_f4 is the module counterpart of export_f4 in f4.h: it
@@ -244,6 +391,57 @@ void free_module_f4_result_data(
         int32_t **bexp,
         int32_t **bcomp,
         void **bcf
+        );
+
+/* --------------------------------------------------------------------- *
+ *  Schreyer frame of a presentation matrix
+ *
+ *  Takes exactly the input of export_module_f4 and returns the ranks of
+ *  the frame instead of the Gröbner basis: betti[i*(*maxdeg+1) + d] is the
+ *  number of level i frame elements of degree d, for 0 <= i < *nlevels and
+ *  0 <= d <= *maxdeg.  Level 0 is the ambient free module, level 1 the
+ *  Gröbner basis of the submodule, and level i+1 the Schreyer syzygies of
+ *  level i, so these are the ranks of a nonminimal free resolution.
+ *
+ *  Degrees are shifted so that the smallest of row_degs is zero, exactly
+ *  as in export_module_f4; the caller can shift them back.
+ *
+ *  max_level truncates the computation after that many levels; pass 0 for
+ *  nr_vars, which is always enough.  betti is allocated with mallocp and
+ *  released by free_module_frame_result_data.  The return value is the
+ *  total number of frame elements, or 0 on failure, in which case nothing
+ *  is allocated.
+ * --------------------------------------------------------------------- */
+
+int64_t export_module_frame(
+        void *(*mallocp) (size_t),
+        /* return values */
+        int32_t *nlevels,
+        int32_t *maxdeg,
+        int32_t **betti,
+        /* input values */
+        const int32_t *lens,
+        const int32_t *exps,
+        const int32_t *comps,
+        const void *cfs,
+        const int32_t *row_degs, /* may be NULL */
+        const uint32_t field_char,
+        const int32_t mon_order,
+        const int32_t module_order,
+        const int32_t nr_vars,
+        const int32_t nr_rows,
+        const int32_t nr_gens,
+        const int32_t max_level,
+        const int32_t ht_size,
+        const int32_t nr_threads,
+        const int32_t max_nr_pairs,
+        const int32_t la_option,
+        const int32_t info_level
+        );
+
+void free_module_frame_result_data(
+        void (*freep) (void *),
+        int32_t **betti
         );
 
 #ifdef __cplusplus

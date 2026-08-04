@@ -343,11 +343,27 @@ is a lie on any machine that is not the build machine.
 |---|---|
 | **M1** | **Done.** `src/neogb/res.h`, `res_grading.c` (degree groups over Z^r ⊕ T with an arithmetic vtable), `res_order.c` (Schreyer/POT/TOP), component slot + component-aware divisibility in `hash.c`, module dispatch in `io.c`. |
 | **M2** | **Done.** Module-aware `get_lcm`, `insert_and_update_spairs` and `find_multiplied_reducer`; `res_module.c` with the `export_module_f4` C entry point taking a presentation matrix. Macaulay2 calls it through `rawMsolveModuleGB` in `Macaulay2/e/interface/msolve.{h,cpp}`. |
-| **M3–M8** | Not started. |
+| **M3** | **Done.** `res_frame.c`: `res_frame_new` / `res_frame_init` / `res_frame_next_level` / `res_frame_complete`, frame ranks via `res_frame_betti`, and the `export_module_frame` C entry point. `res_module.c`'s validate-import-F4 preamble is now shared by both entry points as `module_gb_from_input`. |
+| **M4–M8** | Not started. |
 
-Verification in place: `neogb_res_selftest` (108 checks, run by `make check`), the
+Verification in place: `neogb_res_selftest` (99 checks, run by `make check`), the
 64 pre-existing diff tests still pass, and a cyclic-8 Gröbner basis is byte-identical
 to the pristine 0.10.1 baseline with no measurable slowdown.
+
+M3's frame ranks agree entry for entry with Macaulay2's
+`betti res(M, Strategy => Nonminimal)` on a nine-example corpus — monomial ideals,
+the twisted cubic, a complete intersection of three quadrics where the frame
+(1,6,8,3) is strictly larger than the minimal resolution (1,3,3,1), the
+catalecticant cokernel, and a rank-two module with a nonzero degree shift.
+
+The one free choice in the construction is the direction of the storage order
+inside a block, and it is not cosmetic: Schreyer's theorem attaches the lead term
+of an S-pair to the *larger* of the two indices, so putting the small monomials
+first keeps every colon quotient small. Ascending is what Macaulay2 does; the
+descending variant is still a correct frame but a bigger one, resolving
+`(x², xy, y³)` — projective dimension 2 — in three steps as 1,3,3,1 instead of
+1,3,2. `res_test_frame_block_order` is the discriminating test: flipping
+`res_frame_cmp_mono_asc` fails that one check and passes every other frame test.
 
 The subtlest bug found so far, and the reason the rank-two test earns its keep:
 `find_multiplied_reducer` (`symbol.c:493`) **open codes** its divisibility test rather
@@ -426,6 +442,18 @@ it determines whether a hybrid strategy is worth adding later.
 - **`src/neogb/la.h` is entirely dead** — 1302 lines inside `#if 0`, includes a nonexistent
   `types.h`, referenced by no file. It is nonetheless the only blocked / OpenMP-task-graph LA
   prior art in the tree (`la.h:772-780, 1103-1278`) and is worth reading before M7.
+- **`insert_multiplied_signature_in_hash_table` (`hash.c:707`) computes the wrong hash.**
+  It takes two hash *table indices* and multiplies their exponent vectors correctly, but
+  sets the product's hash to `h1 + h2` — the sum of the two indices — instead of the
+  linear hash `Σ rn[j]·a[j]` that `insert_in_hash_table` and every lookup path use.
+  Entries it inserts are therefore invisible to every other insert, which silently adds
+  a *second* copy of the same monomial under a different index, so nothing dedupes and
+  two equal monomials compare unequal by index. Its only other caller is the dead SBA
+  path (`sba.c:452`), which uses it for all inserts and lookups alike and so never
+  notices. **Do not use it to multiply monomials.** `res_frame.c`'s `res_frame_mul`
+  is the correct version. This bit the `total` field during M3 and was caught only by
+  `res_frame_verify`, which is why that check runs on every frame rather than under a
+  debug flag.
 - **SBA path bugs**, if it is ever touched: `basis.c:209-251` (`check_enlarge_basis` never
   reallocs `sm`/`si`), `basis.c:404-416` (`copy_basis_mod_p` memcpys into unallocated
   `sm`/`si`), `update.c:386` (literal syntax error inside `#if 0`),
