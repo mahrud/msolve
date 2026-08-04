@@ -48,6 +48,7 @@
 #include "engine.c"   /* global, shared parts of gb engine */
 #include "f4.c"       /* implemenation of f4 algorithm */
 #include "res_frame.c"   /* Schreyer frame construction */
+#include "res_diff.c"    /* nonminimal differential of the frame */
 #include "res_module.c"  /* Groebner bases of submodules of a free module */
 #include "sba.c"      /* implemenation of sba algorithm */
 #include "nf.c"       /* implemenation of normal form algorithm */

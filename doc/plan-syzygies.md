@@ -97,12 +97,17 @@ New files are added to that include list, after `la_ff_32.c` and before `engine.
 
 ```c
 #include "res_grading.c"   /* ZZ^r degrees, heft, multidegree buckets */
+#include "res_order.c"     /* Schreyer/POT/TOP module orders          */
 #include "res_frame.c"     /* Schreyer frame construction (monomial only) */
+#include "res_diff.c"      /* nonminimal differential, degree-by-degree driver */
+#include "res_module.c"    /* module GB, frame and resolution C entry points */
 #include "res_la.c"        /* backend vtable + CPU reference kernels */
-#include "res_diff.c"      /* nonminimal differential, slanted-degree driver */
 #include "res_betti.c"     /* rank extraction, Betti table */
-#include "res_export.c"    /* materialize complex, flat-array C API */
 ```
+
+The first five exist; `res_la.c` is M8 and `res_betti.c` is M5.  The flat-array C API
+that was sketched as `res_export.c` lives in `res_module.c` next to the entry points
+that need `module_gb_from_input`, rather than in a file of its own.
 
 Public headers go in `src/neogb/res.h`, added to `libneogb.h` and to `Makefile.am:4-6`.
 Note `libneogb.h` has **no `extern "C"` guard** (unlike `msolve.h`) — add one to `res.h`.
@@ -279,9 +284,13 @@ from level i by the induced Schreyer computation. Reuse `check_monomial_division
 
 ### Nonminimal differential
 
-Drive by **slanted degree** `s = d − i` ascending (La Scala–Stillman), and within a slanted
-degree by level. This is what bounds memory — it makes each level's data available exactly
-when needed and lets finished strands be freed.
+~~Drive by **slanted degree** `s = d − i` ascending (La Scala–Stillman), and within a slanted
+degree by level.~~ **Slanted degree is not a valid schedule.** A reducer used with
+multiplier 1 has the *same* degree as the row it reduces, so level *i* in degree *d* can
+need level *i−1* in degree *d*, whose slanted degree is `s+1` — one strand that has not been
+computed yet, in either direction of the inner loop. Drive by **degree ascending, then level
+ascending** instead: `(i−1, d)` is exactly the step before `(i, d)`. See the M4 status note;
+a mutation to the slanted-degree order fails three selftest checks.
 
 For each (level i, degree d): rows = frame elements at (i, d), columns = module monomials at
 level i−1 in degree d. Reduce against the level i−1 pivot data using a **rank-r
@@ -344,11 +353,15 @@ is a lie on any machine that is not the build machine.
 | **M1** | **Done.** `src/neogb/res.h`, `res_grading.c` (degree groups over Z^r ⊕ T with an arithmetic vtable), `res_order.c` (Schreyer/POT/TOP), component slot + component-aware divisibility in `hash.c`, module dispatch in `io.c`. |
 | **M2** | **Done.** Module-aware `get_lcm`, `insert_and_update_spairs` and `find_multiplied_reducer`; `res_module.c` with the `export_module_f4` C entry point taking a presentation matrix. Macaulay2 calls it through `rawMsolveModuleGB` in `Macaulay2/e/interface/msolve.{h,cpp}`. |
 | **M3** | **Done.** `res_frame.c`: `res_frame_new` / `res_frame_init` / `res_frame_next_level` / `res_frame_complete`, frame ranks via `res_frame_betti`, and the `export_module_frame` C entry point. `res_module.c`'s validate-import-F4 preamble is now shared by both entry points as `module_gb_from_input`. |
-| **M4–M8** | Not started. |
+| **M4** | **Done.** `res_diff.c`: `res_diff_new` / `res_diff_init` / `res_diff_compute` / `res_diff_verify`, one Macaulay matrix per (level, degree) with a parallel multiplier row. `export_module_resolution` in `res_module.c` covers both `RES_SYZ_OF_GB` and `RES_SYZ_OF_INPUT` and, with `max_level = 2`, is the single syzygy matrix. Cross-checked in Macaulay2 by `test/neogb/res/res_reference.m2`. |
+| **M5–M8** | Not started. |
 
-Verification in place: `neogb_res_selftest` (99 checks, run by `make check`), the
+Verification in place: `neogb_res_selftest` (151 checks, run by `make check`), the
 64 pre-existing diff tests still pass, and a cyclic-8 Gröbner basis is byte-identical
 to the pristine 0.10.1 baseline with no measurable slowdown.
+`test/neogb/res/res_reference.m2` is the Macaulay2 script every reference number in the
+selftest came from; it also checks the two things C cannot check cheaply — that each
+complex is *exact*, and that the syzygies generate the same module as `syz`.
 
 M3's frame ranks agree entry for entry with Macaulay2's
 `betti res(M, Strategy => Nonminimal)` on a nine-example corpus — monomial ideals,
@@ -379,6 +392,57 @@ component slot sits at the top of the reverse-lexicographic loop, so plain DRL b
 ties by component all on its own and in the same direction — a naive test passes even
 with the module code switched off. Verified by mutation.
 
+### M4 notes
+
+The reduction is where the two notions of syzygy finally separate in the code, and each
+one taught something.
+
+**The schedule is by degree, not by slanted degree**, and the correction is not
+cosmetic — see the crossed-out paragraph above. The complete intersection of three
+quadrics already exhibits it: the level 2 column of degree 3 reduces against a level 1
+generator of degree 3 with multiplier 1, and under a slanted-degree driver that
+generator's strand (`s = 2`) comes after the row that needs it (`s = 1`), in either
+direction of the inner loop. Reordering the driver to slanted degree fails three
+selftest checks. Degree ascending then level ascending is correct because a reducer's
+degree never exceeds the row's, and `(i−1, d)` precedes `(i, d)`.
+
+**Position over term is the only module order the differential supports.** The
+Schreyer order the reduction runs in is the one that level 0's order induces, and at
+level 0 that order *is* POT — `total` is 1 and the index is the component. Under term
+over position the induced order would have to compare degrees that include the
+component shifts, and the frame's ring hash table deliberately does not carry them.
+Refused at the entry point rather than silently producing a non-complex.
+
+**`RES_SYZ_OF_INPUT` returns a Gröbner basis of the syzygy module, not a minimal
+generating set.** The graph-module trick computes in `R^nr_rows ⊕ R^nr_gens` under an
+order the syzygy module did not choose, so its reduced GB can carry redundant
+generators: the twisted cubic gets 3 columns where M2's `syz` gives 2, three quadrics 4
+where M2 gives 3. `res_reference.m2` checks the thing that is actually true —
+`image ours == image (syz f)` — for every corpus example. When the input generators are
+already a reduced Gröbner basis *and* already minimal syzygy generators, the two agree
+term for term; the Koszul complex and the catalecticant are checked that way.
+Minimalizing is M5's rank extraction, not a patch here.
+
+**The exact `d ∘ d = 0` check does not run by default.** It is a polynomial
+multiplication per column and measured at six times the cost of the resolution itself
+(118 s versus 20 s on six generic cubics in six variables, 6.4 M terms), so
+`res_diff_verify` takes a `deep` flag and `export_module_resolution` a `verify`
+parameter. The cheap half — every column leads with the frame's monomial, with
+coefficient 1, over the frame's parent — always runs, and is what caught the
+reducer-selection mutation below. `make check` passes `verify = 1` throughout.
+
+**Non-homogeneous input is now refused** by both the frame and the resolution entry
+points. `st->homogeneous` is already computed by `import_module_input_data` and already
+accounts for the component shifts; without the guard an inhomogeneous ideal produced a
+confusing "a reducer is not monic" failure from deep inside the linear algebra.
+
+Mutation testing: wrong sign on the multipliers fails 9 checks, taking the
+*largest*-indexed admissible reducer instead of the smallest fails 6, and the
+slanted-degree schedule fails 3. The reducer one is the subtle rule — the frame
+guarantees an admissible reducer of index below `up(k)` exists precisely because `m_k`
+is a minimal generator of the colon ideal, and picking any other one moves the lead
+term off the frame.
+
 ## Milestones
 
 | # | Deliverable | Validation |
@@ -387,7 +451,7 @@ with the module code switched off. Verified by mutation.
 | **M1** | `res_dgrp_t` degree groups (Z^r ⊕ T, vtable, r=1/T=0 fast path); module monomials in `ht_t` (comp slot, divisibility, orders, dispatchers) | Existing msolve test suite **bit-identical**; unit tests for degree arithmetic, module divisibility, Schreyer/POT/TOP comparison |
 | **M2** | **Module F4** — GB of a submodule of a free module (`get_lcm`, `insert_and_update_spairs`) | Module GBs match M2 `gb` on module input; ideal case still bit-identical |
 | **M3** | Schreyer frame construction (monomial only) + frame Betti table | Frame ranks match M2 `res(…, Strategy => Nonminimal)` |
-| **M4** | Nonminimal differential (slanted-degree driver) + **single syzygy matrix** output, both `SYZ_OF_GB` and `SYZ_OF_INPUT` | `d ∘ d = 0`; syzygy matrix matches M2 `syz` |
+| **M4** | Nonminimal differential (degree-by-degree driver) + **single syzygy matrix** output, both `SYZ_OF_GB` and `SYZ_OF_INPUT` | `d ∘ d = 0`; complexes exact in M2; syzygies generate the same module as M2 `syz` |
 | **M5** | Rank extraction → `minimalBetti` equivalent | Betti tables match M2 `minimalBetti` across the corpus |
 | **M6** | Multigraded bucketing, then torsion in the degree group | Cross-check against M2 `res` + `betti` on multigraded examples (M2 has no `minimalBetti` here — this is the novel result) |
 | **M7** | Materialize and export the full complex (flat-array C API, `mallocp` convention) | Round-trip into M2; `prune` to minimal and compare |
@@ -428,6 +492,9 @@ Betti tables are documented.
 
 **Composition check.** Independent of M2: verify `d_i ∘ d_{i+1} = 0` for every materialized
 differential, and that frame ranks minus the two rank corrections are non-negative.
+`res_diff_verify(rd, 1)` does the first exactly; `res_selftest.c` does it a second and
+independent way, by substituting two points of 𝔽_p^n and multiplying the resulting scalar
+matrices, which shares no code at all with the engine it checks.
 
 **Benchmarks.** Include sparse/monomial-flavored inputs where Singular's `fres` (LiftTree)
 is expected to win — knowing where the matrix approach loses is part of the deliverable, and

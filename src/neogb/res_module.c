@@ -314,7 +314,10 @@ static bs_t *module_gb_from_input(
         return NULL;
     }
 
-    /* validate the components before anything is allocated */
+    /* Validate all dimensions before anything is allocated.  The importer
+     * below uses int32_t offsets, while the hash table stores both individual
+     * exponents and shifted total degrees in exp_t.  Reject values that would
+     * otherwise be silently narrowed to a different monomial. */
     int64_t nt = 0;
     for (i = 0; i < nr_gens; ++i) {
         if (lens[i] < 1) {
@@ -322,11 +325,49 @@ static bs_t *module_gb_from_input(
             return NULL;
         }
         nt += lens[i];
+        if (nt > INT32_MAX) {
+            fprintf(ERRSTREAM, "Module input has too many terms.\n");
+            return NULL;
+        }
+    }
+    int32_t mn = 0;
+    if (row_degs != NULL) {
+        mn = row_degs[0];
+        for (i = 1; i < nr_rows; ++i) {
+            if (row_degs[i] < mn) {
+                mn = row_degs[i];
+            }
+        }
+        for (i = 0; i < nr_rows; ++i) {
+            const int64_t shift = (int64_t)row_degs[i] - (int64_t)mn;
+            if (shift > UINT16_MAX) {
+                fprintf(ERRSTREAM, "Row degree %d is too far from the "
+                        "minimum row degree to fit in the exponent table.\n",
+                        i);
+                return NULL;
+            }
+        }
     }
     for (j = 0; j < nt; ++j) {
         if (comps[j] < 1 || comps[j] > nr_rows) {
             fprintf(ERRSTREAM, "Term %d has component %d, outside the range "
                     "1 to %d.\n", j, comps[j], nr_rows);
+            return NULL;
+        }
+        int64_t deg = row_degs != NULL
+            ? (int64_t)row_degs[comps[j]-1] - (int64_t)mn : 0;
+        for (i = 0; i < nr_vars; ++i) {
+            const int32_t exponent = exps[(int64_t)j * nr_vars + i];
+            if (exponent < 0 || exponent > UINT16_MAX) {
+                fprintf(ERRSTREAM, "Term %d has exponent %d, outside the "
+                        "16-bit exponent range.\n", j, exponent);
+                return NULL;
+            }
+            deg += exponent;
+        }
+        if (deg > UINT16_MAX) {
+            fprintf(ERRSTREAM, "Term %d has shifted total degree %ld, outside "
+                    "the 16-bit exponent range.\n", j, (long)deg);
             return NULL;
         }
     }
@@ -378,14 +419,8 @@ static bs_t *module_gb_from_input(
      * all row degrees changes neither the module nor its Groebner basis,
      * only the absolute degrees, which the caller can put back. */
     if (row_degs != NULL) {
-        int32_t mn = row_degs[0];
-        for (i = 1; i < nr_rows; ++i) {
-            if (row_degs[i] < mn) {
-                mn = row_degs[i];
-            }
-        }
         for (i = 0; i < nr_rows; ++i) {
-            bht->cshift[i+1] = (deg_t)(row_degs[i] - mn);
+            bht->cshift[i+1] = (deg_t)((int64_t)row_degs[i] - (int64_t)mn);
         }
     }
 
@@ -418,6 +453,26 @@ static bs_t *module_gb_from_input(
     *stp = st;
 
     return gb;
+}
+
+/* Frames and resolutions are graded objects: every degree they report,
+ * and the whole degree by degree schedule the differential runs on, is
+ * meaningless if the input is not homogeneous.  A module Gröbner basis is
+ * not, which is why this guard sits here rather than in
+ * module_gb_from_input.  st->homogeneous is set by
+ * import_module_input_data and already accounts for the component shifts. */
+static int module_input_is_graded(
+        const md_t * const st
+        )
+{
+    if (st->homogeneous) {
+        return 1;
+    }
+    fprintf(ERRSTREAM, "The input is not homogeneous, so it has no graded "
+            "free resolution; check the degree shifts of the ambient free "
+            "module.\n");
+
+    return 0;
 }
 
 void free_module_f4_result_data(
@@ -562,6 +617,13 @@ int64_t export_module_frame(
 
     ht_t *bht = gb->ht;
 
+    if (!module_input_is_graded(st)) {
+        free_shared_hash_data(bht);
+        free_basis(&gb);
+        free(st);
+        return 0;
+    }
+
     /* Multigraded frames are M6; here the grading is the standard one and
      * the row degrees supply the only shifts, matching bht->cshift. */
     res_dgrp_t *grp = res_dgrp_new_standard(nr_vars);
@@ -635,4 +697,573 @@ cleanup:
     free(st);
 
     return nelts;
+}
+
+/* --------------------------------------------------------------------- *
+ *  Nonminimal free resolutions and syzygies
+ * --------------------------------------------------------------------- */
+
+void free_module_resolution_result_data(
+        void (*freep) (void *),
+        int32_t **ranks,
+        int32_t **degs,
+        int32_t **dlen,
+        int32_t **dexp,
+        int32_t **dcomp,
+        void **dcf
+        )
+{
+    if (*ranks != NULL) {
+        (*freep)(*ranks);
+        *ranks = NULL;
+    }
+    if (*degs != NULL) {
+        (*freep)(*degs);
+        *degs = NULL;
+    }
+    if (*dlen != NULL) {
+        (*freep)(*dlen);
+        *dlen = NULL;
+    }
+    if (*dexp != NULL) {
+        (*freep)(*dexp);
+        *dexp = NULL;
+    }
+    if (*dcomp != NULL) {
+        (*freep)(*dcomp);
+        *dcomp = NULL;
+    }
+    if (*dcf != NULL) {
+        (*freep)(*dcf);
+        *dcf = NULL;
+    }
+}
+
+/* Everything is already computed and checked by the time this runs, so
+ * the sizes are exact and nothing can fail after the first allocation --
+ * which matters, since mallocp comes without a matching free. */
+static int64_t export_resolution_data(
+        void *(*mallocp) (size_t),
+        int32_t *nlevels,
+        int32_t **ranks,
+        int32_t **degs,
+        int32_t **dlen,
+        int32_t **dexp,
+        int32_t **dcomp,
+        void **dcf,
+        const res_diff_t * const rd,
+        const len_t nv
+        )
+{
+    len_t i, k;
+    int64_t t;
+
+    const res_frame_t * const f = rd->f;
+    const len_t nlv = f->nlv;
+
+    int64_t ngens = 0, ncols = 0, nterms = 0;
+    for (i = 0; i < nlv; ++i) {
+        ngens += (int64_t)f->lv[i].ld;
+        if (i == 0) {
+            continue;
+        }
+        ncols += (int64_t)f->lv[i].ld;
+        for (k = 0; k < f->lv[i].ld; ++k) {
+            nterms += (int64_t)rd->d[i][k].len;
+        }
+    }
+
+    if (nterms > (int64_t)INT32_MAX / (nv > 0 ? (int64_t)nv : 1)) {
+        fprintf(ERRSTREAM,
+                "The resolution is too large to store in flat arrays.\n");
+        return 0;
+    }
+
+    int32_t *rk = (int32_t *)(*mallocp)((unsigned long)nlv * sizeof(int32_t));
+    int32_t *dg = (int32_t *)(*mallocp)(
+            (unsigned long)ngens * sizeof(int32_t));
+    int32_t *dl = (int32_t *)(*mallocp)(
+            (unsigned long)(ncols > 0 ? ncols : 1) * sizeof(int32_t));
+    int32_t *de = (int32_t *)(*mallocp)(
+            (unsigned long)(nterms > 0 ? nterms : 1)
+            * (unsigned long)nv * sizeof(int32_t));
+    int32_t *dc = (int32_t *)(*mallocp)(
+            (unsigned long)(nterms > 0 ? nterms : 1) * sizeof(int32_t));
+    int32_t *cf = (int32_t *)(*mallocp)(
+            (unsigned long)(nterms > 0 ? nterms : 1) * sizeof(int32_t));
+
+    int64_t cg = 0, cl = 0, ce = 0, cc = 0;
+
+    for (i = 0; i < nlv; ++i) {
+        rk[i] = (int32_t)f->lv[i].ld;
+        for (k = 0; k < f->lv[i].ld; ++k) {
+            dg[cg++] = (int32_t)f->lv[i].elts[k].hdeg;
+        }
+    }
+    for (i = 1; i < nlv; ++i) {
+        for (k = 0; k < f->lv[i].ld; ++k) {
+            const res_dpoly_t * const p = rd->d[i] + k;
+            dl[cl++] = (int32_t)p->len;
+            for (t = 0; t < p->len; ++t) {
+                const exp_t * const ev = f->ht->ev[p->mon[t]];
+                len_t j;
+                for (j = 1; j <= nv; ++j) {
+                    de[ce++] = (int32_t)ev[j];
+                }
+                dc[cc] = p->pos[t] + 1;
+                cf[cc] = (int32_t)p->cf[t];
+                cc++;
+            }
+        }
+    }
+
+    *nlevels = (int32_t)nlv;
+    *ranks   = rk;
+    *degs    = dg;
+    *dlen    = dl;
+    *dexp    = de;
+    *dcomp   = dc;
+    *dcf     = (void *)cf;
+
+    return nterms;
+}
+
+/* --- syzygies of the input generators -------------------------------- *
+ *
+ * The graph module trick.  Adjoin one new component per input generator
+ * and one extra term e_{nr_rows+j} to generator j; under position over
+ * term with the original components first, an element of the Gröbner
+ * basis whose original components all vanish is exactly a relation among
+ * the generators, read off its new components.  No frame and no
+ * differential are involved -- this is a module Gröbner basis and nothing
+ * else, which is the whole reason msolve can do it at all despite
+ * discarding the change of basis from the input to the Gröbner basis. */
+static int64_t module_syz_of_input(
+        void *(*mallocp) (size_t),
+        int32_t *nlevels,
+        int32_t **ranks,
+        int32_t **degs,
+        int32_t **dlen,
+        int32_t **dexp,
+        int32_t **dcomp,
+        void **dcf,
+        const int32_t *lens,
+        const int32_t *exps,
+        const int32_t *comps,
+        const void *cfs,
+        const int32_t *row_degs,
+        const uint32_t field_char,
+        const int32_t mon_order,
+        const int32_t module_order,
+        const int32_t nr_vars,
+        const int32_t nr_rows,
+        const int32_t nr_gens,
+        const int32_t ht_size,
+        const int32_t nr_threads,
+        const int32_t max_nr_pairs,
+        const int32_t la_option,
+        const int32_t info_level,
+        const int32_t max_level
+        )
+{
+    int32_t i, j;
+    int64_t t, nterms = 0;
+    md_t *st = NULL;
+    bs_t *gb = NULL;
+
+    int32_t *lens2 = NULL, *exps2 = NULL, *comps2 = NULL, *cfs2 = NULL;
+    int32_t *rdeg  = NULL, *sylen = NULL;
+    int64_t *syidx = NULL;
+
+    if (nr_rows < 1 || nr_gens < 1 || nr_vars < 1) {
+        fprintf(ERRSTREAM, "Empty module input.\n");
+        return 0;
+    }
+
+    int64_t nt = 0;
+    for (i = 0; i < nr_gens; ++i) {
+        if (lens[i] < 1) {
+            fprintf(ERRSTREAM, "Generator %d has no terms.\n", i);
+            return 0;
+        }
+        nt += lens[i];
+    }
+    for (t = 0; t < nt; ++t) {
+        if (comps[t] < 1 || comps[t] > nr_rows) {
+            fprintf(ERRSTREAM, "Term %ld has component %d, outside the range "
+                    "1 to %d.\n", (long)t, comps[t], nr_rows);
+            return 0;
+        }
+    }
+
+    if (nr_gens > INT32_MAX - nr_rows || nt > INT32_MAX - nr_gens) {
+        fprintf(ERRSTREAM, "The graph module is too large to index.\n");
+        goto cleanup;
+    }
+    const int32_t nr2 = nr_rows + nr_gens;
+    const int64_t nt2 = nt + nr_gens;
+    if ((uint64_t)nt2 > SIZE_MAX / sizeof(int32_t)
+            || (uint64_t)nt2 > SIZE_MAX / (uint64_t)nr_vars
+                / sizeof(int32_t)) {
+        fprintf(ERRSTREAM, "The graph module is too large to allocate.\n");
+        goto cleanup;
+    }
+
+    lens2  = (int32_t *)malloc((unsigned long)nr_gens * sizeof(int32_t));
+    exps2  = (int32_t *)calloc(
+            (size_t)nt2 * (size_t)nr_vars,
+            sizeof(int32_t));
+    comps2 = (int32_t *)malloc(
+            (size_t)nt2 * sizeof(int32_t));
+    cfs2   = (int32_t *)malloc(
+            (size_t)nt2 * sizeof(int32_t));
+    rdeg   = (int32_t *)malloc((unsigned long)nr2 * sizeof(int32_t));
+    if (lens2 == NULL || exps2 == NULL || comps2 == NULL
+            || cfs2 == NULL || rdeg == NULL) {
+        goto cleanup;
+    }
+
+    /* Degrees, normalized to start at zero exactly as export_module_f4
+     * does, so that both entry points report the same table. */
+    int32_t mn = 0;
+    if (row_degs != NULL) {
+        mn = row_degs[0];
+        for (i = 1; i < nr_rows; ++i) {
+            if (row_degs[i] < mn) {
+                mn = row_degs[i];
+            }
+        }
+    }
+    for (i = 0; i < nr_rows; ++i) {
+        rdeg[i] = row_degs != NULL ? row_degs[i] - mn : 0;
+    }
+
+    const int32_t *icf = (const int32_t *)cfs;
+    int64_t off = 0, off2 = 0;
+    for (i = 0; i < nr_gens; ++i) {
+        lens2[i] = lens[i] + 1;
+        /* the generator's degree, read off its first term; for the graded
+         * input this machinery is about, every term agrees */
+        int32_t d = rdeg[comps[off] - 1];
+        for (j = 0; j < nr_vars; ++j) {
+            d += exps[off * nr_vars + j];
+        }
+        rdeg[nr_rows + i] = d;
+
+        for (t = 0; t < lens[i]; ++t) {
+            for (j = 0; j < nr_vars; ++j) {
+                exps2[(off2 + t) * nr_vars + j] = exps[(off + t) * nr_vars + j];
+            }
+            comps2[off2 + t] = comps[off + t];
+            cfs2[off2 + t]   = icf[off + t];
+        }
+        /* ... and the tautological term e_{nr_rows + i} */
+        comps2[off2 + lens[i]] = nr_rows + i + 1;
+        cfs2[off2 + lens[i]]   = 1;
+
+        off  += lens[i];
+        off2 += lens2[i];
+    }
+
+    gb = module_gb_from_input(&st, lens2, exps2, comps2, cfs2, rdeg,
+            field_char, mon_order, module_order, nr_vars, nr2, nr_gens,
+            ht_size, nr_threads, max_nr_pairs, la_option, 1 /* reduce */,
+            info_level);
+    if (gb == NULL) {
+        goto cleanup;
+    }
+    if (!module_input_is_graded(st)) {
+        goto cleanup;
+    }
+
+    ht_t *bht = gb->ht;
+
+    /* pick out the elements supported in the adjoined components */
+    sylen = (int32_t *)malloc(
+            (unsigned long)(gb->lml > 0 ? gb->lml : 1) * sizeof(int32_t));
+    syidx = (int64_t *)malloc(
+            (unsigned long)(gb->lml > 0 ? gb->lml : 1) * sizeof(int64_t));
+    if (sylen == NULL || syidx == NULL) {
+        goto cleanup;
+    }
+
+    int32_t nsyz = 0;
+    int64_t syterms = 0;
+    for (i = 0; i < (int32_t)gb->lml; ++i) {
+        const bl_t bi   = gb->lmps[i];
+        const hm_t *hm  = gb->hm[bi];
+        if (hm == NULL) {
+            continue;
+        }
+        /* Position over term puts the original components first, so the
+         * lead term alone would decide.  Every term is looked at anyway:
+         * that turns "the original components vanish" from something
+         * inferred from the order into something seen, and it is exactly
+         * the statement that this column is a relation among the
+         * generators, which is why the syzygies of the input need no
+         * separate d_1 o d_2 = 0 check. */
+        int pure = 1;
+        for (t = 0; t < (int64_t)hm[LENGTH]; ++t) {
+            if ((int32_t)bht->ev[hm[OFFSET+t]][bht->cpos] <= nr_rows) {
+                pure = 0;
+                break;
+            }
+        }
+        if (!pure) {
+            continue;
+        }
+        syidx[nsyz] = bi;
+        sylen[nsyz] = (int32_t)hm[LENGTH];
+        syterms    += (int64_t)hm[LENGTH];
+        nsyz++;
+    }
+
+    const int32_t nlv = (max_level == 1 || nsyz == 0) ? 2 : 3;
+    if (nlv == 2) {
+        syterms = 0;
+        nsyz    = 0;
+    }
+
+    nterms = nt + syterms;
+    if (nterms > (int64_t)INT32_MAX / (int64_t)nr_vars) {
+        fprintf(ERRSTREAM,
+                "The resolution is too large to store in flat arrays.\n");
+        nterms = 0;
+        goto cleanup;
+    }
+
+    const int64_t ngens = (int64_t)nr_rows + nr_gens + nsyz;
+    const int64_t ncols = (int64_t)nr_gens + nsyz;
+
+    int32_t *rk = (int32_t *)(*mallocp)((unsigned long)nlv * sizeof(int32_t));
+    int32_t *dg = (int32_t *)(*mallocp)(
+            (unsigned long)ngens * sizeof(int32_t));
+    int32_t *dl = (int32_t *)(*mallocp)(
+            (unsigned long)ncols * sizeof(int32_t));
+    int32_t *de = (int32_t *)(*mallocp)(
+            (unsigned long)nterms * (unsigned long)nr_vars * sizeof(int32_t));
+    int32_t *dc = (int32_t *)(*mallocp)(
+            (unsigned long)nterms * sizeof(int32_t));
+    int32_t *cf = (int32_t *)(*mallocp)(
+            (unsigned long)nterms * sizeof(int32_t));
+
+    rk[0] = nr_rows;
+    rk[1] = nr_gens;
+    if (nlv == 3) {
+        rk[2] = nsyz;
+    }
+
+    int64_t cg = 0, cl = 0, ce = 0, cc = 0;
+    for (i = 0; i < nr2; ++i) {
+        dg[cg++] = rdeg[i];
+    }
+
+    /* d_1 is the caller's matrix, only reduced into [0, p) */
+    const uint32_t fc = st->fc;
+    off = 0;
+    for (i = 0; i < nr_gens; ++i) {
+        dl[cl++] = lens[i];
+        for (t = 0; t < lens[i]; ++t) {
+            for (j = 0; j < nr_vars; ++j) {
+                de[ce++] = exps[(off + t) * nr_vars + j];
+            }
+            dc[cc] = comps[off + t];
+            int64_t v = (int64_t)icf[off + t] % (int64_t)fc;
+            cf[cc]    = (int32_t)(v < 0 ? v + (int64_t)fc : v);
+            cc++;
+        }
+        off += lens[i];
+    }
+
+    /* d_2 is the syzygies, with the adjoined components folded back onto
+     * the generators they index */
+    for (i = 0; i < nsyz; ++i) {
+        const hm_t *hm = gb->hm[syidx[i]];
+        dg[cg++] = (int32_t)bht->hd[hm[OFFSET]].deg;
+        dl[cl++] = sylen[i];
+        for (t = 0; t < sylen[i]; ++t) {
+            const exp_t * const ev = bht->ev[hm[OFFSET+t]];
+            for (j = 1; j <= nr_vars; ++j) {
+                de[ce++] = (int32_t)ev[j];
+            }
+            dc[cc] = (int32_t)ev[bht->cpos] - nr_rows;
+            switch (st->ff_bits) {
+                case 8:
+                    cf[cc] = (int32_t)gb->cf_8[hm[COEFFS]][t];
+                    break;
+                case 16:
+                    cf[cc] = (int32_t)gb->cf_16[hm[COEFFS]][t];
+                    break;
+                default:
+                    cf[cc] = (int32_t)gb->cf_32[hm[COEFFS]][t];
+                    break;
+            }
+            cc++;
+        }
+    }
+
+    *nlevels = nlv;
+    *ranks   = rk;
+    *degs    = dg;
+    *dlen    = dl;
+    *dexp    = de;
+    *dcomp   = dc;
+    *dcf     = (void *)cf;
+
+cleanup:
+    free(lens2);
+    free(exps2);
+    free(comps2);
+    free(cfs2);
+    free(rdeg);
+    free(sylen);
+    free(syidx);
+    if (gb != NULL) {
+        free_shared_hash_data(gb->ht);
+        free_basis(&gb);
+    }
+    free(st);
+
+    return nterms;
+}
+
+int64_t export_module_resolution(
+        void *(*mallocp) (size_t),
+        int32_t *nlevels,
+        int32_t **ranks,
+        int32_t **degs,
+        int32_t **dlen,
+        int32_t **dexp,
+        int32_t **dcomp,
+        void **dcf,
+        const int32_t *lens,
+        const int32_t *exps,
+        const int32_t *comps,
+        const void *cfs,
+        const int32_t *row_degs,
+        const uint32_t field_char,
+        const int32_t mon_order,
+        const int32_t module_order,
+        const int32_t nr_vars,
+        const int32_t nr_rows,
+        const int32_t nr_gens,
+        const int32_t max_level,
+        const int32_t syz_of,
+        const int32_t verify,
+        const int32_t ht_size,
+        const int32_t nr_threads,
+        const int32_t max_nr_pairs,
+        const int32_t la_option,
+        const int32_t info_level
+        )
+{
+    int32_t i;
+    int64_t nterms = 0;
+    md_t *st       = NULL;
+
+    *nlevels = 0;
+    *ranks   = NULL;
+    *degs    = NULL;
+    *dlen    = NULL;
+    *dexp    = NULL;
+    *dcomp   = NULL;
+    *dcf     = NULL;
+
+    if (module_order != RES_MORD_POT) {
+        fprintf(ERRSTREAM, "Resolutions are only implemented for the "
+                "position over term module order: the Schreyer order the "
+                "differential runs in is the one that induces, and term "
+                "over position would need the component degree shifts "
+                "which the frame's ring hash table does not carry.\n");
+        return 0;
+    }
+    if (max_level < 0) {
+        fprintf(ERRSTREAM, "A negative truncation level makes no sense.\n");
+        return 0;
+    }
+
+    if (syz_of == RES_SYZ_OF_INPUT) {
+        if (max_level > 2) {
+            fprintf(ERRSTREAM, "Syzygies of the input generators stop at "
+                    "level 2; resolving further is the Gröbner basis story "
+                    "again, so ask for RES_SYZ_OF_GB.\n");
+            return 0;
+        }
+        return module_syz_of_input(mallocp, nlevels, ranks, degs,
+                dlen, dexp, dcomp, dcf, lens, exps, comps, cfs, row_degs,
+                field_char, mon_order, module_order, nr_vars, nr_rows,
+                nr_gens, ht_size, nr_threads, max_nr_pairs, la_option,
+                info_level, max_level == 0 ? 2 : max_level);
+    }
+    if (syz_of != RES_SYZ_OF_GB) {
+        fprintf(ERRSTREAM, "Unknown syzygy flavour %d.\n", syz_of);
+        return 0;
+    }
+
+    /* As for the frame: the lead terms have to be the minimal generators
+     * of the module of lead terms, which is what reducing gives. */
+    bs_t *gb = module_gb_from_input(&st, lens, exps, comps, cfs, row_degs,
+            field_char, mon_order, module_order, nr_vars, nr_rows, nr_gens,
+            ht_size, nr_threads, max_nr_pairs, la_option, 1 /* reduce */,
+            info_level);
+    if (gb == NULL) {
+        return 0;
+    }
+
+    ht_t *bht = gb->ht;
+
+    if (!module_input_is_graded(st)) {
+        free_shared_hash_data(bht);
+        free_basis(&gb);
+        free(st);
+        return 0;
+    }
+
+    res_dgrp_t *grp  = res_dgrp_new_standard(nr_vars);
+    int32_t *rowmd   = (int32_t *)calloc(
+            (unsigned long)nr_rows, sizeof(int32_t));
+    res_frame_t *f   = grp != NULL ? res_frame_new(grp, st, max_level) : NULL;
+    res_diff_t *rd   = NULL;
+
+    if (grp == NULL || rowmd == NULL || f == NULL) {
+        fprintf(ERRSTREAM, "Could not set up the Schreyer frame.\n");
+        goto cleanup;
+    }
+    for (i = 0; i < nr_rows; ++i) {
+        rowmd[i] = (int32_t)bht->cshift[i+1];
+    }
+
+    if (res_frame_init(f, gb, bht, rowmd)) {
+        goto cleanup;
+    }
+    if (res_frame_complete(f) < 0 || res_frame_verify(f)) {
+        goto cleanup;
+    }
+
+    rd = res_diff_new(f, st->fc);
+    if (rd == NULL) {
+        fprintf(ERRSTREAM, "Could not set up the differential.\n");
+        goto cleanup;
+    }
+    if (res_diff_init(rd, gb, bht, st) || res_diff_compute(rd)) {
+        goto cleanup;
+    }
+    if (res_diff_verify(rd, verify != 0)) {
+        fprintf(ERRSTREAM, "The computed differential is not a complex.\n");
+        goto cleanup;
+    }
+
+    nterms = export_resolution_data(mallocp, nlevels, ranks, degs,
+            dlen, dexp, dcomp, dcf, rd, (len_t)nr_vars);
+
+cleanup:
+    res_diff_free(&rd);
+    res_frame_free(&f);
+    res_dgrp_free(&grp);
+    free(rowmd);
+    free_shared_hash_data(bht);
+    free_basis(&gb);
+    free(st);
+
+    return nterms;
 }

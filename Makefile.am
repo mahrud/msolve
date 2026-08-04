@@ -77,6 +77,8 @@ checkdiff               = test/diff/diff_bug-2nd-prime-bad.sh \
 # dist_check_DATA         = test/input_files
 neogb_io_SOURCES 	= test/neogb/io/validate_input_data.c
 neogb_res_selftest_SOURCES = test/neogb/res/res_selftest.c
+# the Macaulay2 script every reference number in res_selftest.c came from
+EXTRA_DIST = test/neogb/res/res_reference.m2
 fglm_build_matrixn_radical_shape_31_SOURCES = test/fglm/build_matrixn_radical-shape-31.c
 fglm_build_matrixn_nonradical_shape_31_SOURCES = test/fglm/build_matrixn_nonradical-shape-31.c
 fglm_build_matrixn_nonradical_radicalshape_31_SOURCES = test/fglm/build_matrixn_nonradical-radicalshape-31.c

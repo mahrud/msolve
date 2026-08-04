@@ -226,6 +226,9 @@ struct res_frame_gen_t
 {
     hi_t    mono;
     int32_t comp;
+    int32_t src;   /* index in the Gröbner basis this lead term came from;
+                    * carried along so that res_diff.c can recover the
+                    * coefficients after this sort has happened */
 };
 
 static int res_frame_cmp_gen(
@@ -394,6 +397,7 @@ void res_frame_free(
         }
         free(f->lv);
     }
+    free(f->gbmap);
     if (f->ht != NULL) {
         full_free_hash_table(&f->ht);
     }
@@ -468,11 +472,21 @@ int res_frame_init(
         e[0] = (exp_t)d;
         gen[ngen].mono = insert_in_hash_table(e, ht);
         gen[ngen].comp = (int32_t)be[bht->cpos];
+        gen[ngen].src  = (int32_t)gb->lmps[i];
         ngen++;
     }
 
     sort_r(gen, (unsigned long)ngen, sizeof(res_frame_gen_t),
             res_frame_cmp_gen, ht);
+
+    f->gbmap = (int32_t *)malloc(
+            (unsigned long)(ngen > 0 ? ngen : 1) * sizeof(int32_t));
+    if (f->gbmap == NULL) {
+        goto cleanup;
+    }
+    for (i = 0; i < ngen; ++i) {
+        f->gbmap[i] = gen[i].src;
+    }
 
     /* Divisor masks are derived from the exponents seen so far, and every
      * later frame monomial is a colon quotient of these, hence bounded by

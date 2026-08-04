@@ -918,6 +918,712 @@ static void res_test_frame_rejects_exponent_overflow(
 }
 
 /* --------------------------------------------------------------------- *
+ *  Nonminimal differentials and syzygies
+ *
+ *  Every reference below was read off Macaulay2 over the same prime; the
+ *  script that produced them is test/neogb/res/res_reference.m2, which
+ *  also checks the things this file cannot check cheaply in C -- that
+ *  each complex is exact and resolves the module it claims to, and that
+ *  the syzygies generate the same module as Macaulay2's syz.
+ * --------------------------------------------------------------------- */
+
+#define RES_FC 32003
+
+typedef struct res_res_t res_res_t;
+struct res_res_t
+{
+    int32_t  nlv;
+    int32_t *ranks;
+    int32_t *degs;
+    int32_t *dlen;
+    int32_t *dexp;
+    int32_t *dcomp;
+    int32_t *dcf;
+    int64_t  nterms;
+    int32_t *cfs;   /* the working copy msolve reduced in place */
+};
+
+static int64_t res_run_resolution(
+        res_res_t *r,
+        const int32_t *lens,
+        const int32_t *exps,
+        const int32_t *comps,
+        const int32_t *cfs_src,
+        const int32_t *row_degs,
+        const int32_t nv,
+        const int32_t nrows,
+        const int32_t ngens,
+        const int32_t max_level,
+        const int32_t syz_of,
+        const int32_t module_order
+        )
+{
+    int32_t i, nt = 0;
+    void *cf = NULL;
+
+    memset(r, 0, sizeof(res_res_t));
+    for (i = 0; i < ngens; ++i) {
+        nt += lens[i];
+    }
+    r->cfs = (int32_t *)malloc((unsigned long)nt * sizeof(int32_t));
+    memcpy(r->cfs, cfs_src, (unsigned long)nt * sizeof(int32_t));
+
+    r->nterms = export_module_resolution(malloc, &r->nlv, &r->ranks,
+            &r->degs, &r->dlen, &r->dexp, &r->dcomp, &cf,
+            lens, exps, comps, r->cfs, row_degs, RES_FC, 0 /* drl */,
+            module_order, nv, nrows, ngens, max_level, syz_of,
+            1 /* verify d o d = 0 exactly */,
+            12 /* ht size */, 1 /* threads */, 0 /* max pairs */,
+            2 /* la */, 0 /* info */);
+    r->dcf = (int32_t *)cf;
+
+    return r->nterms;
+}
+
+static void res_free_resolution(
+        res_res_t *r
+        )
+{
+    void *cf = r->dcf;
+    free_module_resolution_result_data(free, &r->ranks, &r->degs,
+            &r->dlen, &r->dexp, &r->dcomp, &cf);
+    r->dcf = NULL;
+    free(r->cfs);
+    r->cfs = NULL;
+}
+
+/* d_{i-1} o d_i = 0, checked by substituting a point of F_p^n into every
+ * entry and multiplying the resulting scalar matrices.  A nonzero
+ * composite is a nonzero polynomial matrix of degree well under a
+ * hundred, so one point of F_32003 already misses it with probability
+ * below 1/300; two independent points make that negligible, and this way
+ * the test needs no polynomial arithmetic of its own -- it shares no code
+ * at all with the engine it is checking. */
+static int res_composite_is_zero(
+        const res_res_t * const r,
+        const int32_t nv,
+        const uint32_t * const pt
+        )
+{
+    int32_t i, k, j, c;
+    int64_t cl = 0, ce = 0, cc = 0;
+    int ok = 1;
+
+    if (r->nlv < 3) {
+        return 1;
+    }
+
+    /* mat[i] is the ranks[i-1] x ranks[i] matrix of d_i at the point */
+    uint32_t **mat = (uint32_t **)calloc(
+            (unsigned long)r->nlv, sizeof(uint32_t *));
+
+    for (i = 1; i < r->nlv; ++i) {
+        const int32_t nr = r->ranks[i-1];
+        const int32_t nc = r->ranks[i];
+        mat[i] = (uint32_t *)calloc(
+                (unsigned long)(nr > 0 && nc > 0 ? nr * nc : 1),
+                sizeof(uint32_t));
+        for (k = 0; k < nc; ++k) {
+            const int32_t len = r->dlen[cl++];
+            for (j = 0; j < len; ++j) {
+                uint64_t v = (uint64_t)(uint32_t)r->dcf[cc];
+                for (c = 0; c < nv; ++c) {
+                    int32_t e = r->dexp[ce++];
+                    while (e-- > 0) {
+                        v = (v * (uint64_t)pt[c]) % RES_FC;
+                    }
+                }
+                const int32_t row = r->dcomp[cc] - 1;
+                uint32_t *slot = mat[i] + (int64_t)row * nc + k;
+                *slot = (uint32_t)(((uint64_t)*slot + v) % RES_FC);
+                cc++;
+            }
+        }
+    }
+
+    for (i = 2; i < r->nlv; ++i) {
+        const int32_t nr = r->ranks[i-2];
+        const int32_t nm = r->ranks[i-1];
+        const int32_t nc = r->ranks[i];
+        for (j = 0; j < nr; ++j) {
+            for (k = 0; k < nc; ++k) {
+                uint64_t s = 0;
+                for (c = 0; c < nm; ++c) {
+                    s += (uint64_t)mat[i-1][(int64_t)j * nm + c]
+                        * (uint64_t)mat[i][(int64_t)c * nc + k];
+                    s %= RES_FC;
+                }
+                if (s != 0) {
+                    ok = 0;
+                }
+            }
+        }
+    }
+
+    for (i = 1; i < r->nlv; ++i) {
+        free(mat[i]);
+    }
+    free(mat);
+
+    return ok;
+}
+
+/* ranks, the multiset of degrees at every level, and d o d = 0 */
+static void res_check_resolution(
+        const char *what,
+        const int32_t *lens,
+        const int32_t *exps,
+        const int32_t *comps,
+        const int32_t *cfs,
+        const int32_t *row_degs,
+        const int32_t nv,
+        const int32_t nrows,
+        const int32_t ngens,
+        const int32_t max_level,
+        const int32_t syz_of,
+        const int32_t *ranks,   /* terminated by a negative entry */
+        const int32_t *degs     /* sum(ranks) entries, ascending per level */
+        )
+{
+    int32_t i, k;
+    res_res_t r;
+
+    const int64_t n = res_run_resolution(&r, lens, exps, comps, cfs,
+            row_degs, nv, nrows, ngens, max_level, syz_of, RES_MORD_POT);
+
+    int32_t nlv = 0;
+    while (ranks[nlv] >= 0) {
+        nlv++;
+    }
+
+    RES_CHECK(n > 0 && r.nlv == nlv, what);
+    if (n <= 0 || r.nlv != nlv) {
+        res_free_resolution(&r);
+        return;
+    }
+
+    int ok = 1;
+    for (i = 0; i < nlv; ++i) {
+        if (r.ranks[i] != ranks[i]) {
+            ok = 0;
+        }
+    }
+    RES_CHECK(ok, "the free modules of the resolution have the expected "
+            "ranks");
+
+    /* degrees, compared as a sorted list per level: the order inside a
+     * level is the frame's storage order, which is not part of the
+     * contract */
+    int okd = 1;
+    int32_t off = 0;
+    for (i = 0; i < nlv && okd; ++i) {
+        for (k = 0; k < ranks[i]; ++k) {
+            int32_t seen = 0, j;
+            for (j = 0; j < ranks[i]; ++j) {
+                if (r.degs[off+j] == degs[off+k]) {
+                    seen++;
+                }
+            }
+            int32_t want = 0;
+            for (j = 0; j < ranks[i]; ++j) {
+                if (degs[off+j] == degs[off+k]) {
+                    want++;
+                }
+            }
+            if (seen != want) {
+                okd = 0;
+            }
+        }
+        off += ranks[i];
+    }
+    RES_CHECK(okd, "every free module is generated in the expected degrees");
+
+    const uint32_t pt1[8] = {2, 3, 5, 7, 11, 13, 17, 19};
+    const uint32_t pt2[8] = {9161, 421, 30011, 7, 12289, 251, 4099, 65};
+    RES_CHECK(res_composite_is_zero(&r, nv, pt1)
+            && res_composite_is_zero(&r, nv, pt2),
+            "the differential composes to zero");
+
+    res_free_resolution(&r);
+}
+
+/* Term for term against a reference, for the cases small enough that the
+ * whole differential can be written down. */
+static void res_check_differential(
+        const char *what,
+        const res_res_t * const r,
+        const int32_t nv,
+        const int32_t *dlen,
+        const int32_t *dexp,
+        const int32_t *dcomp,
+        const int32_t *dcf
+        )
+{
+    int32_t i;
+    int64_t ncols = 0, nterms = 0;
+
+    for (i = 1; i < r->nlv; ++i) {
+        ncols += r->ranks[i];
+    }
+    for (i = 0; i < ncols; ++i) {
+        nterms += dlen[i];
+    }
+
+    int ok = nterms == r->nterms;
+    for (i = 0; i < ncols && ok; ++i) {
+        if (r->dlen[i] != dlen[i]) {
+            ok = 0;
+        }
+    }
+    for (i = 0; i < nterms && ok; ++i) {
+        if (r->dcomp[i] != dcomp[i] || r->dcf[i] != dcf[i]) {
+            ok = 0;
+        }
+    }
+    for (i = 0; i < nterms * nv && ok; ++i) {
+        if (r->dexp[i] != dexp[i]) {
+            ok = 0;
+        }
+    }
+    RES_CHECK(ok, what);
+}
+
+/* The Koszul complex on (x,y,z), the one resolution that is forced all
+ * the way down to the sign of every entry. */
+static void res_test_resolution_koszul(
+        void
+        )
+{
+    const int32_t lens[3]  = {1, 1, 1};
+    const int32_t exps[9]  = {1,0,0,  0,1,0,  0,0,1};
+    const int32_t cfs[3]   = {1, 1, 1};
+    const int32_t comps[3] = {1, 1, 1};
+    const int32_t ranks[]  = {1, 3, 3, 1, -1};
+    const int32_t degs[]   = {0,  1,1,1,  2,2,2,  3};
+
+    /* d_1 = (z, y, x), the Gröbner basis in the frame's storage order */
+    const int32_t rlen[7]  = {1, 1, 1,  2, 2, 2,  3};
+    const int32_t rexp[]   = {
+        0,0,1,   0,1,0,   1,0,0,
+        0,0,1, 0,1,0,   0,0,1, 1,0,0,   0,1,0, 1,0,0,
+        0,0,1, 0,1,0, 1,0,0
+    };
+    const int32_t rcomp[]  = {1, 1, 1,  2,1,  3,1,  3,2,  3,2,1};
+    const int32_t p        = RES_FC;
+    const int32_t rcf[]    = {
+        1, 1, 1,
+        1, p-1,   1, p-1,   1, p-1,
+        1, p-1, 1
+    };
+
+    res_check_resolution("the Koszul resolution of (x,y,z) is 1,3,3,1",
+            lens, exps, comps, cfs, NULL, 3, 1, 3, 0, RES_SYZ_OF_GB,
+            ranks, degs);
+
+    res_res_t r;
+    res_run_resolution(&r, lens, exps, comps, cfs, NULL,
+            3, 1, 3, 0, RES_SYZ_OF_GB, RES_MORD_POT);
+    if (r.nterms == 12 && r.nlv == 4) {
+        res_check_differential("the Koszul differential matches its "
+                "reference entry for entry", &r, 3, rlen, rexp, rcomp, rcf);
+    } else {
+        RES_CHECK(0, "the Koszul differential has twelve terms");
+    }
+    res_free_resolution(&r);
+}
+
+/* Hilbert--Burch: the frame is already the minimal resolution, and the
+ * second differential is the classical 3 x 2 matrix. */
+static void res_test_resolution_twisted_cubic(
+        void
+        )
+{
+    const int32_t lens[3]  = {2, 2, 2};
+    const int32_t exps[24] = {
+        1,0,1,0,  0,2,0,0,   /* xz - y^2 */
+        1,0,0,1,  0,1,1,0,   /* xw - yz  */
+        0,1,0,1,  0,0,2,0    /* yw - z^2 */
+    };
+    const int32_t cfs[6]   = {1, -1, 1, -1, 1, -1};
+    const int32_t comps[6] = {1, 1, 1, 1, 1, 1};
+    const int32_t ranks[]  = {1, 3, 2, -1};
+    const int32_t degs[]   = {0,  2,2,2,  3,3};
+
+    res_check_resolution("the twisted cubic resolves as 1,3,2",
+            lens, exps, comps, cfs, NULL, 4, 1, 3, 0, RES_SYZ_OF_GB,
+            ranks, degs);
+
+    /* d_1 is z^2-yw, yz-xw, y^2-xz and d_2 the Hilbert--Burch columns
+     * z e_2 - y e_1 - w e_3 and z e_3 - y e_2 + x e_1 */
+    const int32_t p        = RES_FC;
+    const int32_t rlen[5]  = {2, 2, 2,  3, 3};
+    const int32_t rexp[]   = {
+        0,0,2,0, 0,1,0,1,
+        0,1,1,0, 1,0,0,1,
+        0,2,0,0, 1,0,1,0,
+        0,0,1,0, 0,1,0,0, 0,0,0,1,
+        0,0,1,0, 0,1,0,0, 1,0,0,0
+    };
+    const int32_t rcomp[]  = {1,1, 1,1, 1,1,  2,1,3,  3,2,1};
+    const int32_t rcf[]    = {
+        1,p-1, 1,p-1, 1,p-1,
+        1,p-1,p-1,
+        1,p-1,1
+    };
+
+    res_res_t r;
+    res_run_resolution(&r, lens, exps, comps, cfs, NULL,
+            4, 1, 3, 0, RES_SYZ_OF_GB, RES_MORD_POT);
+    if (r.nterms == 12 && r.nlv == 3) {
+        res_check_differential("the twisted cubic differential is its "
+                "Hilbert-Burch matrix", &r, 4, rlen, rexp, rcomp, rcf);
+    } else {
+        RES_CHECK(0, "the twisted cubic differential has twelve terms");
+    }
+    res_free_resolution(&r);
+}
+
+/* The case where the resolution is genuinely nonminimal: the frame 1,6,8,3
+ * of a complete intersection of three quadrics whose minimal resolution is
+ * 1,3,3,1.  This is also the example that forces the schedule -- level 2
+ * in degree 3 reduces against a level 1 generator of degree 3, with
+ * multiplier 1, so a slanted degree driver would need it before it had
+ * been computed. */
+static void res_test_resolution_nonminimal(
+        void
+        )
+{
+    const int32_t lens[3]  = {2, 2, 2};
+    const int32_t exps[18] = {
+        2,0,0,  0,1,1,   /* x^2 + yz */
+        0,2,0,  1,0,1,   /* y^2 + xz */
+        0,0,2,  1,1,0    /* z^2 + xy */
+    };
+    const int32_t cfs[6]   = {1, 1, 1, 1, 1, 1};
+    const int32_t comps[6] = {1, 1, 1, 1, 1, 1};
+    const int32_t ranks[]  = {1, 6, 8, 3, -1};
+    const int32_t degs[]   = {
+        0,
+        2,2,2,3,3,4,
+        3,3,4,4,4,4,5,5,
+        5,5,6
+    };
+
+    res_check_resolution("a complete intersection of three quadrics has "
+            "the nonminimal resolution 1,6,8,3",
+            lens, exps, comps, cfs, NULL, 3, 1, 3, 0, RES_SYZ_OF_GB,
+            ranks, degs);
+}
+
+/* A rank two module rather than an ideal. */
+static void res_test_resolution_module(
+        void
+        )
+{
+    const int32_t lens[3]  = {2, 2, 2};
+    const int32_t exps[24] = {
+        1,0,0,0,  0,1,0,0,   /* (x,y) */
+        0,1,0,0,  0,0,1,0,   /* (y,z) */
+        0,0,1,0,  0,0,0,1    /* (z,w) */
+    };
+    const int32_t cfs[6]   = {1, 1, 1, 1, 1, 1};
+    const int32_t comps[6] = {1, 2, 1, 2, 1, 2};
+    const int32_t rd[2]    = {0, 0};
+    const int32_t ranks[]  = {2, 6, 5, 1, -1};
+    const int32_t degs[]   = {0,0,  1,1,1,2,2,2,  2,2,2,3,3,  3};
+
+    res_check_resolution("the catalecticant cokernel resolves as 2,6,5,1",
+            lens, exps, comps, cfs, rd, 4, 2, 3, 0, RES_SYZ_OF_GB,
+            ranks, degs);
+}
+
+/* Degree shifts of the ambient free module have to reach the coefficients
+ * too, not just the frame: this module is homogeneous only because the
+ * second row sits in degree one. */
+static void res_test_resolution_row_degrees(
+        void
+        )
+{
+    const int32_t lens[2]  = {2, 2};
+    const int32_t exps[16] = {
+        2,0,0,0,  0,0,1,0,   /* (x^2, z) */
+        0,2,0,0,  0,0,0,1    /* (y^2, w) */
+    };
+    const int32_t cfs[4]   = {1, 1, 1, 1};
+    const int32_t comps[4] = {1, 2, 1, 2};
+    const int32_t rd[2]    = {0, 1};
+    const int32_t ranks[]  = {2, 3, 1, -1};
+    const int32_t degs[]   = {0,1,  2,2,4,  4};
+
+    res_check_resolution("row degrees shift the resolution of "
+            "coker {{x2,y2},{z,w}}",
+            lens, exps, comps, cfs, rd, 4, 2, 2, 0, RES_SYZ_OF_GB,
+            ranks, degs);
+}
+
+/* Truncation must give exactly the head of the full resolution. */
+static void res_test_resolution_truncation(
+        void
+        )
+{
+    const int32_t lens[3]  = {1, 1, 1};
+    const int32_t exps[9]  = {1,0,0,  0,1,0,  0,0,1};
+    const int32_t cfs[3]   = {1, 1, 1};
+    const int32_t comps[3] = {1, 1, 1};
+    const int32_t ranks1[] = {1, 3, -1};
+    const int32_t degs1[]  = {0,  1,1,1};
+    const int32_t ranks2[] = {1, 3, 3, -1};
+    const int32_t degs2[]  = {0,  1,1,1,  2,2,2};
+
+    res_check_resolution("truncating the Koszul resolution at level 1 "
+            "leaves the Gröbner basis",
+            lens, exps, comps, cfs, NULL, 3, 1, 3, 1, RES_SYZ_OF_GB,
+            ranks1, degs1);
+    res_check_resolution("truncating at level 2 leaves the single syzygy "
+            "matrix",
+            lens, exps, comps, cfs, NULL, 3, 1, 3, 2, RES_SYZ_OF_GB,
+            ranks2, degs2);
+}
+
+/* The ranks of the resolution are the frame ranks, which M3 already
+ * checked against Macaulay2; agreeing with them ties the two entry points
+ * together rather than letting them drift apart. */
+static void res_test_resolution_matches_frame(
+        void
+        )
+{
+    const int32_t lens[3]  = {2, 2, 2};
+    const int32_t exps[18] = {
+        2,0,0,  0,1,1,
+        0,2,0,  1,0,1,
+        0,0,2,  1,1,0
+    };
+    const int32_t cfs_src[6] = {1, 1, 1, 1, 1, 1};
+    const int32_t comps[6]   = {1, 1, 1, 1, 1, 1};
+
+    int32_t cfs[6];
+    memcpy(cfs, cfs_src, sizeof(cfs_src));
+
+    int32_t nlv = 0, maxdeg = 0, *betti = NULL;
+    export_module_frame(malloc, &nlv, &maxdeg, &betti,
+            lens, exps, comps, cfs, NULL, RES_FC, 0, RES_MORD_POT,
+            3, 1, 3, 0, 12, 1, 0, 2, 0);
+
+    res_res_t r;
+    res_run_resolution(&r, lens, exps, comps, cfs_src, NULL,
+            3, 1, 3, 0, RES_SYZ_OF_GB, RES_MORD_POT);
+
+    int ok = betti != NULL && r.nterms > 0 && r.nlv == nlv;
+    int32_t i, d, off = 0;
+    for (i = 0; i < nlv && ok; ++i) {
+        int32_t sum = 0;
+        for (d = 0; d <= maxdeg; ++d) {
+            sum += betti[i*(maxdeg+1) + d];
+            /* and degree by degree, not just in total */
+            int32_t seen = 0, k;
+            for (k = 0; k < r.ranks[i]; ++k) {
+                if (r.degs[off+k] == d) {
+                    seen++;
+                }
+            }
+            if (seen != betti[i*(maxdeg+1) + d]) {
+                ok = 0;
+            }
+        }
+        if (sum != r.ranks[i]) {
+            ok = 0;
+        }
+        off += r.ranks[i];
+    }
+    RES_CHECK(ok, "the resolution has exactly the frame's ranks, degree by "
+            "degree");
+
+    free_module_frame_result_data(free, &betti);
+    res_free_resolution(&r);
+}
+
+/* --- syzygies of the input generators -------------------------------- */
+
+/* The three Koszul relations, and nothing else: here the input generators
+ * are already a Gröbner basis and already minimal, so the graph module
+ * trick has to reproduce Macaulay2's syz exactly. */
+static void res_test_syz_of_input_koszul(
+        void
+        )
+{
+    const int32_t lens[3]  = {1, 1, 1};
+    const int32_t exps[9]  = {1,0,0,  0,1,0,  0,0,1};
+    const int32_t cfs[3]   = {1, 1, 1};
+    const int32_t comps[3] = {1, 1, 1};
+    const int32_t ranks[]  = {1, 3, 3, -1};
+    const int32_t degs[]   = {0,  1,1,1,  2,2,2};
+    const int32_t p        = RES_FC;
+
+    /* d_1 is the caller's matrix, in the caller's order */
+    const int32_t rlen[6]  = {1, 1, 1,  2, 2, 2};
+    const int32_t rexp[]   = {
+        1,0,0,   0,1,0,   0,0,1,
+        0,0,1, 0,1,0,   0,0,1, 1,0,0,   0,1,0, 1,0,0
+    };
+    const int32_t rcomp[]  = {1, 1, 1,  2,3,  1,3,  1,2};
+    const int32_t rcf[]    = {1, 1, 1,  1,p-1,  1,p-1,  1,p-1};
+
+    res_check_resolution("the syzygies of (x,y,z) are the three Koszul "
+            "relations",
+            lens, exps, comps, cfs, NULL, 3, 1, 3, 2, RES_SYZ_OF_INPUT,
+            ranks, degs);
+
+    res_res_t r;
+    res_run_resolution(&r, lens, exps, comps, cfs, NULL,
+            3, 1, 3, 2, RES_SYZ_OF_INPUT, RES_MORD_POT);
+    if (r.nterms == 9 && r.nlv == 3) {
+        res_check_differential("the Koszul syzygy matrix matches its "
+                "reference entry for entry", &r, 3, rlen, rexp, rcomp, rcf);
+    } else {
+        RES_CHECK(0, "the Koszul syzygy matrix has nine terms");
+    }
+    res_free_resolution(&r);
+}
+
+/* The catalecticant {{x,y,z},{y,z,w}} has a single syzygy, the vector of
+ * signed maximal minors; this is Macaulay2's syz A term for term. */
+static void res_test_syz_of_input_catalecticant(
+        void
+        )
+{
+    const int32_t lens[3]  = {2, 2, 2};
+    const int32_t exps[24] = {
+        1,0,0,0,  0,1,0,0,
+        0,1,0,0,  0,0,1,0,
+        0,0,1,0,  0,0,0,1
+    };
+    const int32_t cfs[6]   = {1, 1, 1, 1, 1, 1};
+    const int32_t comps[6] = {1, 2, 1, 2, 1, 2};
+    const int32_t rd[2]    = {0, 0};
+    const int32_t ranks[]  = {2, 3, 1, -1};
+    const int32_t degs[]   = {0,0,  1,1,1,  3};
+    const int32_t p        = RES_FC;
+
+    const int32_t rlen[4]  = {2, 2, 2,  6};
+    const int32_t rexp[]   = {
+        1,0,0,0, 0,1,0,0,
+        0,1,0,0, 0,0,1,0,
+        0,0,1,0, 0,0,0,1,
+        /* z^2 - yw, -yz + xw, y^2 - xz */
+        0,0,2,0, 0,1,0,1,
+        0,1,1,0, 1,0,0,1,
+        0,2,0,0, 1,0,1,0
+    };
+    const int32_t rcomp[]  = {1,2, 1,2, 1,2,  1,1,2,2,3,3};
+    const int32_t rcf[]    = {1,1, 1,1, 1,1,  1,p-1, p-1,1, 1,p-1};
+
+    res_check_resolution("the catalecticant has one syzygy, in degree 3",
+            lens, exps, comps, cfs, rd, 4, 2, 3, 2, RES_SYZ_OF_INPUT,
+            ranks, degs);
+
+    res_res_t r;
+    res_run_resolution(&r, lens, exps, comps, cfs, rd,
+            4, 2, 3, 2, RES_SYZ_OF_INPUT, RES_MORD_POT);
+    if (r.nterms == 12 && r.nlv == 3) {
+        res_check_differential("the catalecticant syzygy is the vector of "
+                "signed maximal minors", &r, 4, rlen, rexp, rcomp, rcf);
+    } else {
+        RES_CHECK(0, "the catalecticant syzygy matrix has twelve terms");
+    }
+    res_free_resolution(&r);
+}
+
+/* Where the two flavours part company.  For the twisted cubic the input
+ * generators are a Gröbner basis, so the Schreyer syzygies of the basis
+ * are the two Hilbert--Burch columns, while the graph module produces a
+ * Gröbner basis of the same syzygy module and that has a third, redundant
+ * element in degree 4.  Both generate what Macaulay2's syz generates --
+ * res_reference.m2 checks the module equality -- but only the first is
+ * minimal.  Minimalization is M5. */
+static void res_test_syz_of_input_is_a_basis_not_a_minimal_one(
+        void
+        )
+{
+    const int32_t lens[3]  = {2, 2, 2};
+    const int32_t exps[24] = {
+        1,0,1,0,  0,2,0,0,
+        1,0,0,1,  0,1,1,0,
+        0,1,0,1,  0,0,2,0
+    };
+    const int32_t cfs[6]   = {1, -1, 1, -1, 1, -1};
+    const int32_t comps[6] = {1, 1, 1, 1, 1, 1};
+    const int32_t ranks[]  = {1, 3, 3, -1};
+    const int32_t degs[]   = {0,  2,2,2,  3,3,4};
+
+    res_check_resolution("the syzygies of the twisted cubic generators are "
+            "a Gröbner basis of the syzygy module, so 3 rather than 2",
+            lens, exps, comps, cfs, NULL, 4, 1, 3, 2, RES_SYZ_OF_INPUT,
+            ranks, degs);
+}
+
+/* Bad input must be refused rather than trusted. */
+static void res_test_resolution_rejects_bad_input(
+        void
+        )
+{
+    const int32_t lens[3]  = {1, 1, 1};
+    const int32_t exps[9]  = {1,0,0,  0,1,0,  0,0,1};
+    const int32_t cfs[3]   = {1, 1, 1};
+    const int32_t comps[3] = {1, 1, 1};
+
+    /* x + 1 is not homogeneous */
+    const int32_t ilens[1]  = {2};
+    const int32_t iexps[6]  = {1,0,0,  0,0,0};
+    const int32_t icfs[2]   = {1, 1};
+    const int32_t icomps[2] = {1, 1};
+
+    const int32_t xlens[1]  = {1};
+    const int32_t xexps[1]  = {65536};
+    const int32_t xcfs[1]   = {1};
+    const int32_t xcomps[1] = {1};
+    const int32_t xrows[2]  = {INT32_MIN, INT32_MAX};
+
+    res_res_t r;
+
+    if (res_st_verbose > 0) {
+        fprintf(VERBSTREAM, "res_selftest: six resolution input errors are "
+                "expected next\n");
+    }
+
+    RES_CHECK(res_run_resolution(&r, lens, exps, comps, cfs, NULL,
+                3, 1, 3, 0, RES_SYZ_OF_GB, RES_MORD_TOP) == 0,
+            "term over position is refused by the resolution");
+    RES_CHECK(r.ranks == NULL && r.dlen == NULL && r.dcf == NULL,
+            "a rejected resolution allocates nothing");
+    res_free_resolution(&r);
+
+    RES_CHECK(res_run_resolution(&r, lens, exps, comps, cfs, NULL,
+                3, 1, 3, 3, RES_SYZ_OF_INPUT, RES_MORD_POT) == 0,
+            "syzygies of the input do not resolve past level 2");
+    res_free_resolution(&r);
+
+    RES_CHECK(res_run_resolution(&r, ilens, iexps, icomps, icfs, NULL,
+                3, 1, 1, 0, RES_SYZ_OF_GB, RES_MORD_POT) == 0,
+            "an inhomogeneous ideal has no graded resolution");
+    res_free_resolution(&r);
+
+    RES_CHECK(res_run_resolution(&r, ilens, iexps, icomps, icfs, NULL,
+                3, 1, 1, 2, RES_SYZ_OF_INPUT, RES_MORD_POT) == 0,
+            "an inhomogeneous ideal has no graded syzygy matrix either");
+    res_free_resolution(&r);
+
+    RES_CHECK(res_run_resolution(&r, xlens, xexps, xcomps, xcfs, NULL,
+                1, 1, 1, 0, RES_SYZ_OF_GB, RES_MORD_POT) == 0,
+            "an exponent outside the hash table range is refused");
+    res_free_resolution(&r);
+
+    RES_CHECK(res_run_resolution(&r, xlens, xcomps, xcomps, xcfs, xrows,
+                1, 2, 1, 0, RES_SYZ_OF_GB, RES_MORD_POT) == 0,
+            "row shifts outside the hash table range are refused");
+    res_free_resolution(&r);
+}
+
+/* --------------------------------------------------------------------- *
  *  Entry point
  * --------------------------------------------------------------------- */
 
@@ -950,6 +1656,17 @@ int main(void)
     res_test_frame_truncation();
     res_test_frame_rejects_bad_input();
     res_test_frame_rejects_exponent_overflow();
+    res_test_resolution_koszul();
+    res_test_resolution_twisted_cubic();
+    res_test_resolution_nonminimal();
+    res_test_resolution_module();
+    res_test_resolution_row_degrees();
+    res_test_resolution_truncation();
+    res_test_resolution_matches_frame();
+    res_test_syz_of_input_koszul();
+    res_test_syz_of_input_catalecticant();
+    res_test_syz_of_input_is_a_basis_not_a_minimal_one();
+    res_test_resolution_rejects_bad_input();
 
     if (verbose > 0) {
         fprintf(VERBSTREAM, "res_selftest: %d checks, %d failures\n",

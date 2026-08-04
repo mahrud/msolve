@@ -250,6 +250,11 @@ struct res_frame_t
     const res_dgrp_t *grp;
     len_t             nv;
     len_t             ncomp;  /* rank of the ambient free module       */
+    int32_t          *gbmap;  /* for each level 1 element, the index in
+                               * the Gröbner basis it was read off, so
+                               * that res_diff.c can find its
+                               * coefficients again after the frame has
+                               * sorted the lead terms; length lv[1].ld */
     int               bad;    /* set once a level could not be built;
                                * a truncated frame must never be read
                                * as a complete one                     */
@@ -319,6 +324,108 @@ int64_t res_frame_betti(
         const res_frame_t * const f,
         int32_t *tab,
         const deg_t maxdeg
+        );
+
+/* --------------------------------------------------------------------- *
+ *  The nonminimal differential
+ *
+ *  The frame gives the lead term of every entry of the resolution; this
+ *  layer fills in the rest.  Write D_i(k) for the image in F_{i-1} of the
+ *  k-th basis element of F_i.  Level 1 is the module Gröbner basis, and
+ *  for i >= 2 the defining property D_{i-1}(D_i(k)) = 0 reads
+ *
+ *      m_k * D_{i-1}(up(k))  =  sum_j c_j u_j D_{i-1}(q_j),
+ *
+ *  so D_i(k) = m_k e_{up(k)} - sum_j c_j u_j e_{q_j}.  The left hand side
+ *  is a multiple of a generator, hence lies in the module the D_{i-1}(q)
+ *  generate, and Schreyer's theorem says those are a Gröbner basis of it;
+ *  the reduction therefore always reaches zero, and the coefficients it
+ *  used *are* the differential.  Not one S-pair is formed: the frame is
+ *  the entire schedule.
+ *
+ *  The one rule that makes the lead term come out right is to reduce the
+ *  leading monomial of the left hand side by the *smallest indexed*
+ *  admissible reducer.  The frame guarantees one with index < up(k)
+ *  exists -- that is exactly what minimality of m_k in the colon ideal
+ *  says -- and every tail term is then automatically below m_k e_{up(k)}
+ *  in the Schreyer order.
+ *
+ *  Scheduling is by degree ascending and, within a degree, by level
+ *  ascending.  Level i in degree d reduces against level i-1 in degrees
+ *  *up to and including* d: a reducer used with multiplier 1 has the same
+ *  degree as the row it reduces.  That is why the slanted degree d - i is
+ *  not by itself a valid schedule -- it would put level i-1 in degree d,
+ *  whose slanted degree is one larger, after the row that needs it.
+ * --------------------------------------------------------------------- */
+
+/* One column of a differential: an element of the free module one level
+ * down, as a sorted list of terms cf * mon * e_pos with mon a ring
+ * monomial in the frame's hash table and pos an index into that level. */
+typedef struct res_dpoly_t res_dpoly_t;
+struct res_dpoly_t
+{
+    len_t     len;
+    hm_t     *mon;
+    int32_t  *pos;
+    uint32_t *cf;
+};
+
+typedef struct res_diff_t res_diff_t;
+struct res_diff_t
+{
+    res_frame_t  *f;    /* not owned                                    */
+    uint32_t      fc;   /* field characteristic                         */
+    res_dpoly_t **d;    /* d[i][k] = D_i(k) for 1 <= i < f->nlv         */
+    len_t         nlv;
+    int           bad;
+};
+
+/* The differential of a completed frame.  The frame must have been built
+ * with the position over term order: the induced Schreyer order compares
+ * components first, and the frame's plain ring hash table does not carry
+ * the component degree shifts that a term over position order would have
+ * to compare. */
+res_diff_t *res_diff_new(
+        res_frame_t *f,
+        const uint32_t fc
+        );
+
+void res_diff_free(
+        res_diff_t **dp
+        );
+
+/* Level 1: the Gröbner basis itself, re-expressed over the frame's ring
+ * hash table and made monic.  gb and bht are the same ones res_frame_init
+ * was given. */
+int res_diff_init(
+        res_diff_t *rd,
+        const bs_t * const gb,
+        const ht_t * const bht,
+        const md_t * const md
+        );
+
+/* Levels 2 upwards.  Returns 0 on success. */
+int res_diff_compute(
+        res_diff_t *rd
+        );
+
+/* Checks the differential against the frame: every column leads with the
+ * frame's monomial, with coefficient one, over the frame's parent.  That
+ * is O(number of columns) and is what the rest of the engine reads the
+ * differential through.
+ *
+ * With deep != 0 it also expands D_{i-1}(D_i(k)) term by term and
+ * requires every coefficient to vanish.  That is the real check -- it
+ * needs nothing but the answer itself, and everything the frame and
+ * Schreyer's theorem and the reducer selection contribute shows up in it
+ * -- but it is a polynomial multiplication per column and costs several
+ * times the resolution it checks, so it is off by default.
+ *
+ * Returns the number of violations, so 0 means the differential is a
+ * complex. */
+int res_diff_verify(
+        const res_diff_t * const rd,
+        const int deep
         );
 
 /* --------------------------------------------------------------------- *
@@ -442,6 +549,114 @@ int64_t export_module_frame(
 void free_module_frame_result_data(
         void (*freep) (void *),
         int32_t **betti
+        );
+
+/* --------------------------------------------------------------------- *
+ *  Nonminimal free resolutions and syzygies
+ *
+ *  Two things are called a syzygy and they are not the same object:
+ *
+ *    RES_SYZ_OF_GB     syzygies of the *Gröbner basis* of the submodule.
+ *                      This is what the Schreyer frame produces and what
+ *                      the resolution is built out of; d_1 is the Gröbner
+ *                      basis and d_2 its first syzygies.
+ *    RES_SYZ_OF_INPUT  syzygies of the *generators the caller gave*, which
+ *                      is what Macaulay2's syz returns.  msolve discards
+ *                      the change of basis from the input to the Gröbner
+ *                      basis, so these are computed instead by the graph
+ *                      module trick: take the Gröbner basis of the columns
+ *                      (f_j, e_j) of R^nr_rows (+) R^nr_gens under a
+ *                      position over term order with the R^nr_rows block
+ *                      first, and keep the elements whose R^nr_rows part
+ *                      vanishes.  Here d_1 is the input matrix itself.
+ *
+ *  In both cases the result is a complex of free modules
+ *
+ *      F_0 <-- F_1 <-- ... <-- F_{nlevels-1},
+ *
+ *  reported as
+ *
+ *    ranks   nlevels entries, the rank of each F_i
+ *    degs    sum(ranks) entries, the degree of every generator of every
+ *            F_i, concatenated level by level; shifted so that the
+ *            smallest row degree is zero, exactly as in export_module_f4
+ *    dlen    one entry per generator of F_1, ..., F_{nlevels-1}, again
+ *            concatenated level by level: the number of terms of that
+ *            column of the differential
+ *    dexp    nr_vars exponents per term
+ *    dcomp   one entry per term, the 1-based generator of F_{i-1} it sits
+ *            in
+ *    dcf     one int32_t coefficient per term
+ *
+ *  max_level truncates at that level, so max_level = 2 is the single
+ *  syzygy matrix and 0 means nr_vars, which by Hilbert's syzygy theorem is
+ *  always enough.  RES_SYZ_OF_INPUT accepts no max_level above 2, since
+ *  resolving beyond the first syzygies is the Gröbner basis story again.
+ *
+ *  verify != 0 additionally runs the exact d o d = 0 check of
+ *  res_diff_verify over the whole complex, refusing to report a result
+ *  that is not a complex.  It costs several times the resolution itself,
+ *  so it is a request, not the default.  It has no effect on
+ *  RES_SYZ_OF_INPUT, where d_1 o d_2 = 0 is structural: a column is
+ *  reported only once every one of its terms has been seen to sit in the
+ *  adjoined components, and that is exactly the statement that its
+ *  original components cancel.
+ *
+ *  The differential is the *nonminimal* one: its ranks are the frame
+ *  ranks of export_module_frame, not the minimal Betti numbers.
+ *
+ *  All six arrays are allocated with mallocp and released by
+ *  free_module_resolution_result_data.  The return value is the total
+ *  number of terms, or 0 on failure, in which case nothing is allocated.
+ *  A resolution with no terms at all cannot occur, since every column of
+ *  d_1 is nonzero.
+ * --------------------------------------------------------------------- */
+
+typedef enum {
+    RES_SYZ_OF_GB    = 0,
+    RES_SYZ_OF_INPUT = 1
+} res_syz_t;
+
+int64_t export_module_resolution(
+        void *(*mallocp) (size_t),
+        /* return values */
+        int32_t *nlevels,
+        int32_t **ranks,
+        int32_t **degs,
+        int32_t **dlen,
+        int32_t **dexp,
+        int32_t **dcomp,
+        void **dcf,
+        /* input values */
+        const int32_t *lens,
+        const int32_t *exps,
+        const int32_t *comps,
+        const void *cfs,
+        const int32_t *row_degs, /* may be NULL */
+        const uint32_t field_char,
+        const int32_t mon_order,
+        const int32_t module_order,
+        const int32_t nr_vars,
+        const int32_t nr_rows,
+        const int32_t nr_gens,
+        const int32_t max_level,
+        const int32_t syz_of,
+        const int32_t verify,
+        const int32_t ht_size,
+        const int32_t nr_threads,
+        const int32_t max_nr_pairs,
+        const int32_t la_option,
+        const int32_t info_level
+        );
+
+void free_module_resolution_result_data(
+        void (*freep) (void *),
+        int32_t **ranks,
+        int32_t **degs,
+        int32_t **dlen,
+        int32_t **dexp,
+        int32_t **dcomp,
+        void **dcf
         );
 
 #ifdef __cplusplus
