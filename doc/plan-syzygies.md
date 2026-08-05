@@ -76,14 +76,14 @@ Everything module-theoretic is new code.
 
 ### Decisions taken
 
-| Axis | Decision |
-|---|---|
-| Placement | **In-tree fork**, new `src/neogb/res_*.c` added to `gb.c`'s include list |
-| Milestone 1 | **Both, staged** — one core (frame + differential), two consumers (ranks, complex) |
+| Axis             | Decision                                                                            |
+|------------------|-------------------------------------------------------------------------------------|
+| Placement        | **In-tree fork**, new `src/neogb/res_*.c` added to `gb.c`'s include list            |
+| Milestone 1      | **Both, staged** — one core (frame + differential), two consumers (ranks, complex)  |
 | Module monomials | **Component slot in `ht_t`/`ev`**, plus a lifted `total` monomial per frame element |
-| Multigrading | **Designed in from day one**; degrees are an opaque **struct** over an arbitrary f.g. abelian group A = Z^r ⊕ T, heft-degree scheduling, r=1/T=0 specialized |
-| Input | **Modules from day one**, not just ideals — an ideal is the rank-1 case |
-| Outputs | **Single syzygy matrix** is a first-class output alongside full resolutions |
+| Multigrading     | **Designed in from day one**; degrees are an opaque **struct**                      |
+| Input            | **Modules from day one**, not just ideals — an ideal is the rank-1 case             |
+| Outputs          | **Single syzygy matrix** is a first-class output alongside full resolutions         |
 
 ---
 
@@ -308,7 +308,8 @@ explicit column maps in the new `res_block_t`.
 
 For each (i, multidegree j) the degree-0 part of d_i is a scalar matrix over 𝔽_p — rows the
 generators of F_i in degree j, columns those of F_{i-1} in degree j, entries the
-coefficients of the terms whose ring monomial is 1 — and the formula above applies. These matrices are **dense-ish and mutually independent across (i, j)** — the
+coefficients of the terms whose ring monomial is 1 — and the formula above applies.
+These matrices are **dense-ish and mutually independent across (i, j)** — the
 natural GPU/NPU target. A rank-only kernel can **skip back-substitution entirely**, unlike
 `exact_dense_linear_algebra_ff_32` (`la_ff_32.c:3390`), whose interreduction pass
 (`la_ff_32.c:3354`) exists only to produce RREF. Note there is currently no function named
@@ -356,7 +357,7 @@ is a lie on any machine that is not the build machine.
 | **M3** | **Done.** `res_frame.c`: `res_frame_new` / `res_frame_init` / `res_frame_next_level` / `res_frame_complete`, frame ranks via `res_frame_betti`, and the `export_module_frame` C entry point. `res_module.c`'s validate-import-F4 preamble is now shared by both entry points as `module_gb_from_input`. |
 | **M4** | **Done.** `res_diff.c`: `res_diff_new` / `res_diff_init` / `res_diff_compute` / `res_diff_verify`, one Macaulay matrix per (level, degree) with a parallel multiplier row. `export_module_resolution` in `res_module.c` covers both `RES_SYZ_OF_GB` and `RES_SYZ_OF_INPUT` and, with `max_level = 2`, is the single syzygy matrix. Cross-checked in Macaulay2 by `test/neogb/res/res_reference.m2`. |
 | **M5** | **Done.** `res_betti.c`: `res_betti_new` / `res_betti_minimalize` / `res_betti_pdim` / `res_betti_reg` / `res_hilbert_invariants`, and the `export_module_betti` C entry point. Minimal Betti numbers by rank extraction, plus the Hilbert numerator (Macaulay2's `poincare`), projective dimension, regularity, Krull dimension and degree. Fixing the frame's block order is part of this milestone; see the notes. |
-| **M6–M8** | Not started. |
+| **M6–M9** | Not started. M9 is the option surface Macaulay2's `gb`/`syz`/`res` expect; see the notes. |
 
 Verification in place: `neogb_res_selftest` (256 checks, run by `make check`), the
 64 pre-existing diff tests still pass, and a cyclic-8 Gröbner basis is byte-identical
@@ -427,7 +428,9 @@ where M2 gives 3. `res_reference.m2` checks the thing that is actually true —
 `image ours == image (syz f)` — for every corpus example. When the input generators are
 already a reduced Gröbner basis *and* already minimal syzygy generators, the two agree
 term for term; the Koszul complex and the catalecticant are checked that way.
-Minimalizing is not a patch here, and M5 does not fix it either: rank extraction minimalizes Betti *numbers* without ever building a minimal generating set, so `RES_SYZ_OF_INPUT` still returns the Gröbner basis it always did.
+Minimalizing is not a patch here, and M5 does not fix it either: rank extraction
+minimalizes Betti *numbers* without ever building a minimal generating set,
+so `RES_SYZ_OF_INPUT` still returns the Gröbner basis it always did.
 
 **The exact `d ∘ d = 0` check does not run by default.** It is a polynomial
 multiplication per column and measured at six times the cost of the resolution itself
@@ -517,6 +520,62 @@ blocks whose pivots happen to be ±1, so the elimination gets the right rank wit
 ever dividing, and six random cubics in four variables is the smallest case found that
 does not.
 
+### M9 notes: what the Macaulay2 option tables ask for
+
+M5 finished the *outputs*. What is still entirely missing is *control over the
+computation*, and the shape of the gap is easiest to read off Macaulay2's own option
+tables for `gb`, `syz` and `res`. Between them the four module entry points accept
+`max_level`, `syz_of`, `minimal`, `verify`, `ht_size`, `nr_threads`, `max_nr_pairs`,
+`la_option`, `reduce_gb` and `info_level` — and nothing else.
+
+The single structural fact behind most of the table: **msolve's F4 has no stop
+conditions.** The round loop in `f4.c` runs a degree at a time until the pair set is
+empty; there is no early exit, no partial result, and no way to ask for one. So
+`BasisElementLimit`, `CodimensionLimit`, `PairLimit`, `StopWithMinimalGenerators`,
+`SubringLimit` and `SyzygyLimit` are all the same piece of work — a stop-condition
+mechanism in the round loop plus a way to report that the result is partial — not six
+independent features. Note `max_nr_pairs` is *not* one of them: it sets `st->mnsel`,
+the most pairs selected in a single round (`symbol.c:268`), which is a batching knob.
+Mapping `PairLimit` onto it would silently return a complete basis computed slowly
+instead of a partial one.
+
+Ranked by value over cost:
+
+1. **`DegreeLimit` / `HardDegreeLimit`.** The cheapest, because both loops are already
+   degree-driven: `symbol.c` selects the pairs of minimal degree, and `res_diff_compute`
+   is scheduled one `(level, degree)` at a time. A ceiling is a `break`, and the
+   truncated-frame bookkeeping `export_module_betti` already does for `max_level`
+   transfers directly.
+2. **`Hilbert`.** M5 made msolve *produce* the numerator; teaching the F4 to *consume*
+   one closes the loop. The classical win — knowing how many elements a degree must
+   contribute and stopping the reduction once they appear — is exactly the case where
+   msolve currently does the most redundant work, and it is the one option here that
+   makes existing computations faster rather than merely stoppable.
+3. **`ChangeMatrix`.** Nearly free, and already half implemented: the graph module
+   `(f_j, e_j)` carries the expression of every Gröbner basis element in terms of the
+   input in its adjoined block, and `RES_SYZ_OF_INPUT` computes that Gröbner basis and
+   then discards precisely the elements a change matrix would keep. This is blocked on
+   the same missing capability as the syzygy ordering (below), so the two should be done
+   together.
+4. **`SyzygyRows`.** Free as an output filter, since the retained rows are adjoined
+   components; making it prune *work* rather than output needs those components ordered
+   last, which is again the elimination-block question.
+
+And the one that keeps coming back: `res.h` refuses to combine an elimination block
+with a module order. That refusal is what forces `RES_SYZ_OF_INPUT` onto POT — `TOP`
+compares `res_cmp_terms_drl` first (`res_order.c:147-153`), and for a homogeneous graph
+module element every term shares `ev[DEG]`, so the degree ties and the lead can land in
+the adjoined block while the original part is still nonzero, destroying the invariant
+the whole trick rests on. Lifting the refusal — an elimination block over the
+`R^nr_rows` components with TOP on the rest — fixes three things at once: `msolveSyzygy`
+returns a basis for Macaulay2's default term-over-position-up order, `ChangeMatrix`
+becomes available, and `SyzygyRows` can prune work.
+
+`Macaulay2/packages/Msolve.m2` carries the full option-by-option table next to
+`msolveDefaultOptions`, including the ones that are M2-side or meaningless for F4
+(`Algorithm`, `MaxReductionCount`, `ParallelizeByDegree`, `SortStrategy`,
+`StopBeforeComputation`).
+
 ## Milestones
 
 | # | Deliverable | Validation |
@@ -530,6 +589,7 @@ does not.
 | **M6** | Multigraded bucketing, then torsion in the degree group | Cross-check against M2 `res` + `betti` on multigraded examples (M2 has no `minimalBetti` here — this is the novel result) |
 | **M7** | Materialize and export the full complex (flat-array C API, `mallocp` convention) | Round-trip into M2; `prune` to minimal and compare |
 | **M8** | LA backend vtable + CPU reference; then CUDA | Identical results across backends; benchmark sweep incl. sparse inputs where LiftTree should win |
+| **M9** | **Computation controls** — degree ceilings, the Hilbert function hint, a change matrix, and the stop conditions Macaulay2's `gb`/`syz`/`res` options ask for | Each control reproduces the corresponding `gb(…, Option => v)` / `res(…, Option => v)` result in M2; the unconstrained path stays bit-identical |
 | **Later** | Equivariant grading via an external group library → graded quotient rings (truncated, infinite frame) → exterior algebras (BGG/Tate) → FLINT fields → path algebras (Anick/Green–Solberg) | |
 
 M1 and M2 are the risky ones — they touch msolve core. Keep the non-module path provably
