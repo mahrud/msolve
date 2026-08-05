@@ -190,6 +190,15 @@ struct ht_t
     deg_t *cshift; /* degree shift of each component, length ncomp+1 and
                     * already folded into ev[DEG] of every monomial of
                     * that component; entry 0 is always 0 */
+    deg_t *vwt;    /* heft degree of each variable, indexed by exponent
+                    * slot, so vwt[0] and vwt[cpos] are 0 and vwt[i+1] is
+                    * the weight of variable i; length evl.  NULL means
+                    * every variable has weight one, which is msolve's
+                    * usual total degree and the only case before gradings
+                    * became a parameter -- every code path that reads
+                    * this checks for NULL first, so the unweighted path
+                    * is untouched.  Only ever non-NULL on a module table
+                    * (see res.h). */
 };
 
 /* S-pair types */

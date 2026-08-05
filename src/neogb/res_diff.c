@@ -657,12 +657,10 @@ int res_diff_init(
         res_frame_ht_reserve(ht, (hl_t)len + 1);
         for (j = 0; j < len; ++j) {
             const exp_t * const be = bht->ev[hm[OFFSET+j]];
-            deg_t d = 0;
             for (i = 1; i <= nv; ++i) {
                 e[i] = be[i];
-                d    = d + (deg_t)be[i];
             }
-            e[0] = (exp_t)d;
+            e[0] = (exp_t)res_frame_hdeg(ht, e);
             const int32_t c = (int32_t)be[bht->cpos];
             if (c < 1 || c > (int32_t)f->ncomp) {
                 fprintf(ERRSTREAM, "A basis term has component %d, outside "

@@ -282,7 +282,7 @@ static void res_test_module_gb_rank_one(
     const int64_t mterms = export_module_f4(malloc,
             &mbld, &mblen, &mbexp, &mbcomp, &mbcf,
             lens, exps, comps, cfs_b, NULL /* row degrees */,
-            fc, 0 /* drl */, res_strat_p(module_order),
+            fc, 0 /* drl */, res_strat_p(module_order), NULL,
             3 /* nvars */, 1 /* nrows */, 3 /* ngens */,
             12 /* ht size */, 1 /* threads */, 0 /* max pairs */,
             2 /* la */, 1 /* reduce */, 0 /* info */);
@@ -346,7 +346,7 @@ static void res_test_module_gb_split_components(
     const int64_t nterms = export_module_f4(malloc,
             &bld, &blen, &bexp, &bcomp, &bcf,
             lens, exps, comps, cfs, NULL,
-            fc, 0, res_strat_p(RES_MORD_POT),
+            fc, 0, res_strat_p(RES_MORD_POT), NULL,
             3 /* nvars */, 2 /* nrows */, 3 /* ngens */,
             12, 1, 0, 2, 1, 0);
 
@@ -390,7 +390,7 @@ static void res_test_module_gb_rank_two(
     const int64_t nterms = export_module_f4(malloc,
             &bld, &blen, &bexp, &bcomp, &bcf,
             lens, exps, comps, cfs, NULL,
-            fc, 0, res_strat_p(RES_MORD_POT),
+            fc, 0, res_strat_p(RES_MORD_POT), NULL,
             3 /* nvars */, 2 /* nrows */, 2 /* ngens */,
             12, 1, 0, 2, 1, 0);
 
@@ -482,7 +482,7 @@ static void res_test_classical_resolutions(
     const int64_t tc_nterms = export_module_f4(malloc,
             &tc_bld, &tc_blen, &tc_bexp, &tc_bcomp, &tc_bcf,
             tc_lens, tc_exps, tc_comps, tc_cfs, tc_row_degs,
-            fc, 0, res_strat_p(RES_MORD_POT), 4, 1, 3, 12, 1, 0, 2, 1, 0);
+            fc, 0, res_strat_p(RES_MORD_POT), NULL, 4, 1, 3, 12, 1, 0, 2, 1, 0);
 
     const int tc_shape_ok = tc_bld == 3 && tc_nterms == 6
         && tc_blen != NULL && tc_bexp != NULL
@@ -525,7 +525,7 @@ static void res_test_classical_resolutions(
     const int64_t hb_nterms = export_module_f4(malloc,
             &hb_bld, &hb_blen, &hb_bexp, &hb_bcomp, &hb_bcf,
             hb_lens, hb_exps, hb_comps, hb_cfs, hb_row_degs,
-            fc, 0, res_strat_p(RES_MORD_POT), 4, 3, 2, 12, 1, 0, 2, 1, 0);
+            fc, 0, res_strat_p(RES_MORD_POT), NULL, 4, 3, 2, 12, 1, 0, 2, 1, 0);
 
     const int hb_shape_ok = hb_bld == 3 && hb_nterms == 10
         && hb_blen != NULL && hb_bexp != NULL
@@ -572,7 +572,7 @@ static void res_test_classical_resolutions(
     const int64_t cat_nterms = export_module_f4(malloc,
             &cat_bld, &cat_blen, &cat_bexp, &cat_bcomp, &cat_bcf,
             cat_lens, cat_exps, cat_comps, cat_cfs, cat_row_degs,
-            fc, 0, res_strat_p(RES_MORD_POT), 4, 2, 3, 12, 1, 0, 2, 1, 0);
+            fc, 0, res_strat_p(RES_MORD_POT), NULL, 4, 2, 3, 12, 1, 0, 2, 1, 0);
 
     const int cat_shape_ok = cat_bld == 6 && cat_nterms == 12
         && cat_blen != NULL && cat_bexp != NULL
@@ -625,7 +625,7 @@ static void res_test_module_gb_rejects_bad_input(
                 "res_selftest: three module input errors are expected next\n");
     }
     RES_CHECK(export_module_f4(malloc, &bld, &blen, &bexp, &bcomp, &bcf,
-                lens, exps, bad_comps, cfs, NULL, 32003, 0, res_strat_p(RES_MORD_POT),
+                lens, exps, bad_comps, cfs, NULL, 32003, 0, res_strat_p(RES_MORD_POT), NULL,
                 3, 2, 1, 12, 1, 0, 2, 1, 0) == 0,
             "an out of range component is rejected");
     RES_CHECK(blen == NULL && bexp == NULL && bcomp == NULL && bcf == NULL,
@@ -633,13 +633,13 @@ static void res_test_module_gb_rejects_bad_input(
 
     RES_CHECK(export_module_f4(malloc, &bld, &blen, &bexp, &bcomp, &bcf,
                 lens, exps, ok_comps, cfs, NULL, 32003, 0,
-                res_strat_p(RES_MORD_SCHREYER),
+                res_strat_p(RES_MORD_SCHREYER), NULL,
                 3, 2, 1, 12, 1, 0, 2, 1, 0) == 0,
             "the Schreyer order is refused as a *base* order");
 
     RES_CHECK(export_module_f4(malloc, &bld, &blen, &bexp, &bcomp, &bcf,
                 lens, exps, ok_comps, cfs, NULL, 0 /* char 0 */, 0,
-                res_strat_p(RES_MORD_POT), 3, 2, 1, 12, 1, 0, 2, 1, 0) == 0,
+                res_strat_p(RES_MORD_POT), NULL, 3, 2, 1, 12, 1, 0, 2, 1, 0) == 0,
             "characteristic zero is refused");
 }
 
@@ -683,7 +683,7 @@ static void res_check_frame(
     int32_t nlv = 0, maxdeg = 0, *betti = NULL;
     const int64_t nelts = export_module_frame(malloc, &nlv, &maxdeg, &betti,
             lens, exps, comps, cfs, row_degs, 32003, 0 /* drl */,
-            res_strat_p(RES_MORD_POT), nv, nrows, ngens, max_level,
+            res_strat_p(RES_MORD_POT), NULL, nv, nrows, ngens, max_level,
             12 /* ht size */, 1 /* threads */, 0 /* max pairs */,
             2 /* la */, 0 /* info */);
 
@@ -957,7 +957,7 @@ static void res_test_frame_rejects_bad_input(
     }
     RES_CHECK(export_module_frame(malloc, &nlv, &maxdeg, &betti,
                 lens, exps, comps, cfs, NULL, 32003, 0,
-                res_strat_p(RES_MORD_SCHREYER),
+                res_strat_p(RES_MORD_SCHREYER), NULL,
                 3, 1, 1, 0, 12, 1, 0, 2, 0) == 0,
             "the Schreyer order is refused as a base order by the frame");
     RES_CHECK(betti == NULL && nlv == 0,
@@ -965,7 +965,7 @@ static void res_test_frame_rejects_bad_input(
 
     RES_CHECK(export_module_frame(malloc, &nlv, &maxdeg, &betti,
                 lens, exps, comps, cfs, NULL, 0 /* char 0 */, 0,
-                res_strat_p(RES_MORD_POT), 3, 1, 1, 0, 12, 1, 0, 2, 0) == 0,
+                res_strat_p(RES_MORD_POT), NULL, 3, 1, 1, 0, 12, 1, 0, 2, 0) == 0,
             "characteristic zero is refused by the frame");
 }
 
@@ -980,7 +980,7 @@ static void res_test_frame_rejects_exponent_overflow(
     int32_t nlv = 0, maxdeg = 0, *betti = NULL;
 
     RES_CHECK(export_module_frame(malloc, &nlv, &maxdeg, &betti,
-                lens, exps, comps, cfs, NULL, 32003, 0, res_strat_p(RES_MORD_POT),
+                lens, exps, comps, cfs, NULL, 32003, 0, res_strat_p(RES_MORD_POT), NULL,
                 2, 1, 2, 0, 12, 1, 0, 2, 0) == 0,
             "a lifted monomial exceeding the exponent representation is refused");
     RES_CHECK(betti == NULL && nlv == 0,
@@ -998,6 +998,616 @@ static void res_test_frame_rejects_exponent_overflow(
  * --------------------------------------------------------------------- */
 
 #define RES_FC 32003
+
+/* --------------------------------------------------------------------- *
+ *  M6: gradings by a finitely generated abelian group
+ *
+ *  Three things have to be true for a grading to be more than a label.
+ *  The Gröbner basis has to be computed under the *heft* order it induces,
+ *  which is what makes the degree by degree schedules terminate; the Betti
+ *  table has to come out bucketed by multidegree, which is strictly finer
+ *  than the heft degree and is the thing Macaulay2 has no minimalBetti
+ *  for; and the heft indexed table has to stay exactly what it was, since
+ *  a heft class is a disjoint union of multidegree classes.  The tests
+ *  below check all three, and every one of them is discriminating: run
+ *  them with the grading replaced by the standard one and they fail.
+ * --------------------------------------------------------------------- */
+
+static void res_test_degree_buckets(
+        void
+        )
+{
+    /* Z^2, so that two distinct degrees can share a heft */
+    const int32_t degs[4] = {1, 0,  0, 1};
+    const int32_t heft[2] = {1, 1};
+    int32_t buf[2];
+    hl_t perm[4];
+
+    res_dgrp_t *g = res_dgrp_new(2, 0, NULL, 2, degs, heft);
+    res_dbkt_t *b = g != NULL ? res_dbkt_new(g, 2) : NULL;
+
+    RES_CHECK(g != NULL && b != NULL, "a multidegree bucket set is built");
+    if (g == NULL || b == NULL) {
+        res_dbkt_free(&b);
+        res_dgrp_free(&g);
+        return;
+    }
+
+    res_deg_t d = {buf};
+
+    buf[0] = 2; buf[1] = 1;
+    const hl_t u0 = res_dbkt_insert(b, d);
+    buf[0] = 1; buf[1] = 2;
+    const hl_t u1 = res_dbkt_insert(b, d);
+    buf[0] = 2; buf[1] = 1;
+    const hl_t u2 = res_dbkt_insert(b, d);
+
+    RES_CHECK(u0 != u1, "two degrees of the same heft get distinct buckets");
+    RES_CHECK(u0 == u2, "re-inserting a degree returns its bucket");
+    RES_CHECK(b->ld == 2, "the bucket set holds only the distinct degrees");
+
+    buf[0] = 5; buf[1] = 5;
+    RES_CHECK(res_dbkt_find(b, d) == (hl_t)-1,
+            "a degree never inserted is not found");
+
+    /* force a rehash, then check nothing was lost */
+    int32_t k;
+    for (k = 0; k < 40; ++k) {
+        buf[0] = k; buf[1] = -k;
+        RES_CHECK(res_dbkt_insert(b, d) != (hl_t)-1,
+                "bucket insertion survives a rehash");
+        res_st_run--;  /* one check for the whole loop, not forty */
+    }
+    res_st_run++;
+    buf[0] = 2; buf[1] = 1;
+    RES_CHECK(res_dbkt_find(b, d) == u0,
+            "a bucket assigned before a rehash still resolves after it");
+
+    res_dbkt_free(&b);
+
+    /* sorting relabels the buckets into the group's own order */
+    b = res_dbkt_new(g, 2);
+    if (b != NULL) {
+        buf[0] = 3; buf[1] = 0;
+        const hl_t a0 = res_dbkt_insert(b, d);
+        buf[0] = 1; buf[1] = 0;
+        const hl_t a1 = res_dbkt_insert(b, d);
+        buf[0] = 2; buf[1] = 0;
+        const hl_t a2 = res_dbkt_insert(b, d);
+
+        RES_CHECK(res_dbkt_sort(b, perm) == 0, "the bucket set sorts");
+        RES_CHECK(perm[a1] == 0 && perm[a2] == 1 && perm[a0] == 2,
+                "sorting puts the buckets in the group's own order");
+        RES_CHECK(res_dbkt_at(b, 0).e[0] == 1 && res_dbkt_at(b, 2).e[0] == 3,
+                "the sorted buckets hold the sorted degrees");
+        buf[0] = 2; buf[1] = 0;
+        RES_CHECK(res_dbkt_find(b, d) == 1,
+                "lookup still works after a sort");
+        res_dbkt_free(&b);
+    }
+
+    res_dgrp_free(&g);
+}
+
+/* Runs export_module_betti under a grading and checks the multigraded
+ * table entry for entry, the heft table entry for entry, and that the one
+ * really is the fibrewise sum of the other.  ref is triples-with-a-degree:
+ * level, then dlen degree slots, then the count, terminated by a level of
+ * -1.  href is the heft table in the usual (level, degree, count) triples. */
+static void res_check_graded_betti(
+        const char *what,
+        const res_grading_t * const grading,
+        const int32_t *lens,
+        const int32_t *exps,
+        const int32_t *comps,
+        const int32_t *cfs_src,
+        const int32_t *row_degs,
+        const int32_t nv,
+        const int32_t nrows,
+        const int32_t ngens,
+        const int32_t *ref,
+        const int32_t *href,
+        const int32_t rpdim,
+        const int32_t rreg,
+        const int32_t rdim,
+        const int64_t rdeg
+        )
+{
+    int32_t i, l;
+    int64_t nterms = 0;
+
+    for (i = 0; i < ngens; ++i) {
+        nterms += lens[i];
+    }
+    int32_t *cfs = (int32_t *)malloc((unsigned long)nterms * sizeof(int32_t));
+    memcpy(cfs, cfs_src, (unsigned long)nterms * sizeof(int32_t));
+
+    const int32_t dlen = res_grading_len(grading);
+
+    int32_t nlv = 0, maxdeg = 0, shift = 0;
+    int32_t pdim = -2, reg = -2, dim = -2;
+    int64_t deg  = -1;
+    int32_t *tab = NULL, *num = NULL;
+    res_mtable_t mt;
+
+    memset(&mt, 0, sizeof(res_mtable_t));
+
+    const int64_t nelts = export_module_betti(malloc, &nlv, &maxdeg, &shift,
+            &tab, &num, &pdim, &reg, &dim, &deg, &mt,
+            lens, exps, comps, cfs, row_degs, RES_FC, 0 /* drl */,
+            NULL, grading, nv, nrows, ngens, 0 /* full */, 1 /* minimal */,
+            1 /* verify */, 12, 1, 0, 2, 0);
+    free(cfs);
+
+    RES_CHECK(nelts > 0 && tab != NULL && mt.betti != NULL, what);
+    if (nelts <= 0 || tab == NULL || mt.betti == NULL) {
+        free_module_betti_result_data(free, &tab, &num);
+        free_module_mtable_data(free, &mt);
+        return;
+    }
+
+    RES_CHECK(mt.dlen == dlen,
+            "the multigraded table reports the grading's own degree length");
+    RES_CHECK(mt.nlevels == nlv,
+            "both tables report the same levels");
+
+    /* every reference entry is present in the multigraded table, and the
+     * table holds nothing besides them */
+    int ok = 1;
+    int64_t want = 0, seen = 0;
+    for (i = 0; ref[i] >= 0; i += dlen + 2) {
+        int32_t u, found = -1;
+        want += ref[i + dlen + 1];
+        for (u = 0; u < mt.ndegs; ++u) {
+            int32_t j, eq = 1;
+            for (j = 0; j < dlen; ++j) {
+                if (mt.degs[u*dlen + j] != ref[i + 1 + j]) {
+                    eq = 0;
+                }
+            }
+            if (eq) {
+                found = u;
+            }
+        }
+        if (found < 0 || ref[i] >= mt.nlevels
+                || mt.betti[ref[i]*mt.ndegs + found] != ref[i + dlen + 1]) {
+            ok = 0;
+        }
+    }
+    for (l = 0; l < mt.nlevels; ++l) {
+        for (i = 0; i < mt.ndegs; ++i) {
+            seen += mt.betti[l*mt.ndegs + i];
+        }
+    }
+    RES_CHECK(ok && seen == want,
+            "the multigraded Betti table matches its Macaulay2 reference");
+
+    /* the heft table, which has to stay exactly what it always was */
+    int hok = 1;
+    int64_t hwant = 0, hseen = 0;
+    for (i = 0; href[i] >= 0; i += 3) {
+        hwant += href[i+2];
+        if (href[i] >= nlv || href[i+1] > maxdeg
+                || tab[href[i]*(maxdeg+1) + href[i+1]] != href[i+2]) {
+            hok = 0;
+        }
+    }
+    for (l = 0; l < nlv; ++l) {
+        int32_t d;
+        for (d = 0; d <= maxdeg; ++d) {
+            hseen += tab[l*(maxdeg+1) + d];
+        }
+    }
+    RES_CHECK(hok && hseen == hwant,
+            "the heft indexed Betti table matches its Macaulay2 reference");
+
+    /* and the two are the same numbers: summing the multigraded table over
+     * a heft fibre has to reproduce the heft table.  This is the check
+     * that fails if the rank extraction blocks by the wrong thing. */
+    int fib = 1;
+    int32_t *acc = (int32_t *)calloc(
+            (unsigned long)nlv * (unsigned long)(maxdeg+1), sizeof(int32_t));
+    if (acc != NULL) {
+        for (l = 0; l < mt.nlevels; ++l) {
+            for (i = 0; i < mt.ndegs; ++i) {
+                const int32_t h = mt.heft[i];
+                if (h < 0 || h > maxdeg) {
+                    fib = 0;
+                    continue;
+                }
+                acc[l*(maxdeg+1) + h] += mt.betti[l*mt.ndegs + i];
+            }
+        }
+        for (l = 0; l < nlv; ++l) {
+            int32_t d;
+            for (d = 0; d <= maxdeg; ++d) {
+                if (acc[l*(maxdeg+1) + d] != tab[l*(maxdeg+1) + d]) {
+                    fib = 0;
+                }
+            }
+        }
+        free(acc);
+    }
+    RES_CHECK(fib, "the heft table is the multigraded one summed over each "
+            "heft fibre");
+
+    /* the same identity for the Hilbert numerator */
+    int nok = 1;
+    if (num != NULL) {
+        int32_t *hn = (int32_t *)calloc(
+                (unsigned long)maxdeg + 1, sizeof(int32_t));
+        if (hn != NULL) {
+            for (i = 0; i < mt.ndegs; ++i) {
+                if (mt.heft[i] >= 0 && mt.heft[i] <= maxdeg) {
+                    hn[mt.heft[i]] += mt.hilbnum[i];
+                }
+            }
+            for (i = 0; i <= maxdeg; ++i) {
+                if (hn[i] != num[i]) {
+                    nok = 0;
+                }
+            }
+            free(hn);
+        }
+    }
+    RES_CHECK(nok, "the heft Hilbert numerator is the multigraded one "
+            "specialized along the heft");
+
+    RES_CHECK(pdim == rpdim, "the projective dimension matches Macaulay2");
+    RES_CHECK(reg == rreg, "the regularity matches Macaulay2");
+    RES_CHECK(dim == rdim, "the Krull dimension matches Macaulay2");
+    RES_CHECK(deg == rdeg, "the degree matches Macaulay2");
+
+    free_module_betti_result_data(free, &tab, &num);
+    free_module_mtable_data(free, &mt);
+}
+
+/* R = k[x,y,z] with deg x = 1, deg y = 2, deg z = 3, and I = (x^2 y, yz, xz).
+ * The heft degree is the weighted degree, so the Gröbner basis itself is
+ * computed in weighted DRL; with the weights dropped the generators would
+ * sit in degrees 3, 2, 2 instead of 4, 5, 4 and every number below would
+ * change.  Macaulay2 reference in test/neogb/res/res_reference.m2. */
+static void res_test_weighted_betti(
+        void
+        )
+{
+    const int32_t vdegs[3] = {1, 2, 3};
+    const res_grading_t grading = {1, 0, NULL, vdegs, NULL};
+
+    const int32_t lens[3]  = {1, 1, 1};
+    const int32_t exps[9]  = {2,1,0,  0,1,1,  1,0,1};
+    const int32_t comps[3] = {1, 1, 1};
+    const int32_t cfs[3]   = {1, 1, 1};
+
+    /* level, degree, count -- r = 1, so the two tables coincide */
+    const int32_t ref[]  = {0,0,1,  1,4,2,  1,5,1,  2,6,1,  2,7,1,  -1};
+    const int32_t href[] = {0,0,1,  1,4,2,  1,5,1,  2,6,1,  2,7,1,  -1};
+
+    res_check_graded_betti(
+            "a weighted grading resolves through the C entry point",
+            &grading, lens, exps, comps, cfs, NULL, 3, 1, 3,
+            ref, href, 2 /* pdim */, 5 /* reg */, 1 /* dim */, 14 /* deg */);
+}
+
+/* The same weighted ring, but an ideal whose *order* depends on the
+ * weights: y^4 - x^5 z and z^2 - x^2 y^2 are weighted homogeneous of
+ * degrees 8 and 6 and are not homogeneous at all for the standard grading,
+ * so the weights are not decoration here -- they decide which term of each
+ * generator leads, hence the Gröbner basis, hence the frame.  Under plain
+ * degree reverse lexicographic the lead of the first would be x^5 z rather
+ * than y^4.
+ *
+ * This is the test that fails if the heft degree is not carried in ev[DEG]:
+ * the input then looks inhomogeneous and is refused outright.  Macaulay2
+ * reference in test/neogb/res/res_reference.m2. */
+static void res_test_weighted_order(
+        void
+        )
+{
+    const int32_t vdegs[3] = {1, 2, 3};
+    const res_grading_t grading = {1, 0, NULL, vdegs, NULL};
+
+    const int32_t lens[2]  = {2, 2};
+    const int32_t exps[12] = {
+        0,4,0, 5,0,1,   /* y^4 - x^5 z,   weighted degree 8 */
+        0,0,2, 2,2,0    /* z^2 - x^2 y^2, weighted degree 6 */
+    };
+    const int32_t comps[4] = {1, 1, 1, 1};
+    const int32_t cfs[4]   = {1, RES_FC-1, 1, RES_FC-1};
+
+    const int32_t ref[]  = {0,0,1,  1,6,1,  1,8,1,  2,14,1,  -1};
+    const int32_t href[] = {0,0,1,  1,6,1,  1,8,1,  2,14,1,  -1};
+
+    res_check_graded_betti(
+            "a weighted grading decides the order, not just the degrees",
+            &grading, lens, exps, comps, cfs, NULL, 3, 1, 2,
+            ref, href, 2 /* pdim */, 12 /* reg */, 1 /* dim */, 48 /* deg */);
+}
+
+/* T = k[a,b,c,d] over P^1 x P^1 and J = (ac, bd, ad).  This is the case the
+ * whole milestone is about: level 2 carries two generators of the same heft
+ * degree 3 sitting in different multidegrees, (1,2) and (2,1), so the heft
+ * table reports a single 2 where the multigraded table reports two 1s.  A
+ * rank extraction that blocked by heft degree would still get the heft
+ * table right and could not produce this one at all. */
+static void res_test_multigraded_betti(
+        void
+        )
+{
+    const int32_t vdegs[8] = {1,0,  1,0,  0,1,  0,1};
+    const int32_t heft[2]  = {1, 1};
+    const res_grading_t grading = {2, 0, NULL, vdegs, heft};
+
+    const int32_t lens[3]   = {1, 1, 1};
+    const int32_t exps[12]  = {1,0,1,0,  0,1,0,1,  1,0,0,1};
+    const int32_t comps[3]  = {1, 1, 1};
+    const int32_t cfs[3]    = {1, 1, 1};
+
+    /* level, deg0, deg1, count */
+    const int32_t ref[]  = {0,0,0,1,  1,1,1,3,  2,1,2,1,  2,2,1,1,  -1};
+    const int32_t href[] = {0,0,1,  1,2,3,  2,3,2,  -1};
+
+    res_check_graded_betti(
+            "a Z^2 grading resolves through the C entry point",
+            &grading, lens, exps, comps, cfs, NULL, 4, 1, 3,
+            ref, href, 2 /* pdim */, 1 /* reg */, 2 /* dim */, 3 /* deg */);
+}
+
+/* The same ring and module presented with a degree shift: N = coker[ac bd]
+ * over R^1, whose resolution is 1, 2, 1 in multidegrees (0,0), (1,1),
+ * (2,2). */
+static void res_test_multigraded_module(
+        void
+        )
+{
+    const int32_t vdegs[8] = {1,0,  1,0,  0,1,  0,1};
+    const int32_t heft[2]  = {1, 1};
+    const res_grading_t grading = {2, 0, NULL, vdegs, heft};
+
+    const int32_t lens[2]  = {1, 1};
+    const int32_t exps[8]  = {1,0,1,0,  0,1,0,1};
+    const int32_t comps[2] = {1, 1};
+    const int32_t cfs[2]   = {1, 1};
+
+    const int32_t ref[]  = {0,0,0,1,  1,1,1,2,  2,2,2,1,  -1};
+    const int32_t href[] = {0,0,1,  1,2,2,  2,4,1,  -1};
+
+    res_check_graded_betti(
+            "a Z^2 graded cokernel resolves through the C entry point",
+            &grading, lens, exps, comps, cfs, NULL, 4, 1, 2,
+            ref, href, 2 /* pdim */, 2 /* reg */, 2 /* dim */, 4 /* deg */);
+}
+
+/* Torsion.  R = k[x,y] graded by Z (+) Z/2 with deg x = (1,0) and
+ * deg y = (1,1); the heft ignores the torsion, so x and y both have heft
+ * degree 1 and the ring order is msolve's ordinary DRL, but the two
+ * generators of I = (x^2, xy) land in different multidegrees, (2,0) and
+ * (2,1).  Macaulay2 has no grading group with torsion, so the reference
+ * here is by hand: the resolution is the Koszul-like 1, 2, 1 with the
+ * syzygy y*x^2 - x*(xy) in multidegree (3,1).
+ *
+ * This is the test that the torsion arithmetic is real rather than carried
+ * along: with nt = 0 the two level 1 generators share a bucket and the
+ * multigraded table collapses onto the heft one. */
+static void res_test_torsion_betti(
+        void
+        )
+{
+    const int32_t tord[1]  = {2};
+    const int32_t vdegs[4] = {1,0,  1,1};
+    const int32_t heft[1]  = {1};
+    const res_grading_t grading = {1, 1, tord, vdegs, heft};
+
+    const int32_t lens[2]  = {1, 1};
+    const int32_t exps[4]  = {2,0,  1,1};
+    const int32_t comps[2] = {1, 1};
+    const int32_t cfs[2]   = {1, 1};
+
+    /* level, free part, torsion residue, count */
+    const int32_t ref[]  = {0,0,0,1,  1,2,0,1,  1,2,1,1,  2,3,1,1,  -1};
+    const int32_t href[] = {0,0,1,  1,2,2,  2,3,1,  -1};
+
+    res_check_graded_betti(
+            "a grading with torsion resolves through the C entry point",
+            &grading, lens, exps, comps, cfs, NULL, 2, 1, 2,
+            ref, href, 2 /* pdim */, 1 /* reg */, 1 /* dim */, 1 /* deg */);
+}
+
+/* The standard grading spelled out as a res_grading_t has to give exactly
+ * what NULL gives -- not merely the same Betti numbers, but the same
+ * arrays.  This is what makes every test above a test of the *grading*
+ * rather than of a second code path. */
+static void res_test_explicit_standard_grading(
+        void
+        )
+{
+    const int32_t vdegs[4] = {1, 1, 1, 1};
+    const res_grading_t grading = {1, 0, NULL, vdegs, NULL};
+
+    /* the twisted cubic, whose resolution is 1, 3, 2 */
+    const int32_t lens[3]  = {2, 2, 2};
+    const int32_t exps[24] = {
+        1,0,1,0, 0,2,0,0,   /* xz - y^2 */
+        1,0,0,1, 0,1,1,0,   /* xw - yz  */
+        0,1,0,1, 0,0,2,0    /* yw - z^2 */
+    };
+    const int32_t comps[6] = {1,1, 1,1, 1,1};
+    const int32_t cfs[6]   = {1, RES_FC-1, 1, RES_FC-1, 1, RES_FC-1};
+
+    int32_t a_nlv = 0, a_max = 0, b_nlv = 0, b_max = 0;
+    int32_t *a_tab = NULL, *a_num = NULL, *b_tab = NULL, *b_num = NULL;
+    int32_t cfsa[6], cfsb[6];
+
+    memcpy(cfsa, cfs, sizeof(cfs));
+    memcpy(cfsb, cfs, sizeof(cfs));
+
+    const int64_t na = export_module_betti(malloc, &a_nlv, &a_max, NULL,
+            &a_tab, &a_num, NULL, NULL, NULL, NULL, NULL,
+            lens, exps, comps, cfsa, NULL, RES_FC, 0, NULL, NULL,
+            4, 1, 3, 0, 1, 0, 12, 1, 0, 2, 0);
+    const int64_t nb = export_module_betti(malloc, &b_nlv, &b_max, NULL,
+            &b_tab, &b_num, NULL, NULL, NULL, NULL, NULL,
+            lens, exps, comps, cfsb, NULL, RES_FC, 0, NULL, &grading,
+            4, 1, 3, 0, 1, 0, 12, 1, 0, 2, 0);
+
+    RES_CHECK(na == nb && a_nlv == b_nlv && a_max == b_max,
+            "the explicit standard grading agrees with NULL on the shape");
+    if (a_tab != NULL && b_tab != NULL && a_nlv == b_nlv && a_max == b_max) {
+        RES_CHECK(memcmp(a_tab, b_tab,
+                    (unsigned long)a_nlv * (a_max+1) * sizeof(int32_t)) == 0,
+                "the explicit standard grading gives an identical table");
+        RES_CHECK(memcmp(a_num, b_num,
+                    (unsigned long)(a_max+1) * sizeof(int32_t)) == 0,
+                "the explicit standard grading gives an identical numerator");
+    }
+
+    free_module_betti_result_data(free, &a_tab, &a_num);
+    free_module_betti_result_data(free, &b_tab, &b_num);
+}
+
+/* A grading the engine cannot run, and input the grading cannot grade. */
+static void res_test_grading_rejects_bad_input(
+        void
+        )
+{
+    const int32_t lens[2]  = {1, 1};
+    const int32_t exps[4]  = {2,0,  1,1};
+    const int32_t comps[2] = {1, 1};
+    int32_t cfs[2]         = {1, 1};
+
+    const int32_t vdegs[4] = {1,0,  1,1};
+    const int32_t heft[1]  = {1};
+
+    int32_t nlv = 0, maxdeg = 0;
+
+    if (res_st_verbose > 0) {
+        fprintf(VERBSTREAM,
+                "res_selftest: five grading errors are expected next\n");
+    }
+
+    /* a torsion factor of order one is not a torsion factor */
+    const int32_t bad_tord[1] = {1};
+    const res_grading_t g1 = {1, 1, bad_tord, vdegs, heft};
+    RES_CHECK(export_module_betti(malloc, &nlv, &maxdeg, NULL, NULL, NULL,
+                NULL, NULL, NULL, NULL, NULL,
+                lens, exps, comps, cfs, NULL, RES_FC, 0, NULL, &g1,
+                2, 1, 2, 0, 0, 0, 12, 1, 0, 2, 0) == 0,
+            "a torsion factor of order below two is refused");
+
+    /* torsion without the orders to reduce by */
+    const res_grading_t g2 = {1, 1, NULL, vdegs, heft};
+    RES_CHECK(export_module_betti(malloc, &nlv, &maxdeg, NULL, NULL, NULL,
+                NULL, NULL, NULL, NULL, NULL,
+                lens, exps, comps, cfs, NULL, RES_FC, 0, NULL, &g2,
+                2, 1, 2, 0, 0, 0, 12, 1, 0, 2, 0) == 0,
+            "torsion factors without their orders are refused");
+
+    /* no degrees at all */
+    const res_grading_t g3 = {1, 0, NULL, NULL, heft};
+    RES_CHECK(export_module_betti(malloc, &nlv, &maxdeg, NULL, NULL, NULL,
+                NULL, NULL, NULL, NULL, NULL,
+                lens, exps, comps, cfs, NULL, RES_FC, 0, NULL, &g3,
+                2, 1, 2, 0, 0, 0, 12, 1, 0, 2, 0) == 0,
+            "a grading without variable degrees is refused");
+
+    /* a variable of heft degree zero: the degree by degree schedule would
+     * never terminate, so this is refused rather than attempted */
+    const int32_t zdegs[2] = {1, 0};
+    const res_grading_t g4 = {1, 0, NULL, zdegs, heft};
+    RES_CHECK(export_module_betti(malloc, &nlv, &maxdeg, NULL, NULL, NULL,
+                NULL, NULL, NULL, NULL, NULL,
+                lens, exps, comps, cfs, NULL, RES_FC, 0, NULL, &g4,
+                2, 1, 2, 0, 0, 0, 12, 1, 0, 2, 0) == 0,
+            "a variable of heft degree zero is refused");
+
+    /* Input that is homogeneous for the heft but not for the grading:
+     * x^2 + xy has heft degree 2 throughout, and multidegrees (2,0) and
+     * (1,1), so it is graded for Z and not for Z^2.  Catching this needs
+     * the multidegree of every term, which is exactly what the heft
+     * homogeneity test the engine had before cannot see. */
+    const int32_t mdegs[4] = {1,0,  0,1};
+    const int32_t mheft[2] = {1, 1};
+    const res_grading_t g5 = {2, 0, NULL, mdegs, mheft};
+    const int32_t ilens[1]  = {2};
+    const int32_t iexps[4]  = {2,0,  1,1};
+    const int32_t icomps[2] = {1, 1};
+    int32_t icfs[2]         = {1, 1};
+    RES_CHECK(export_module_betti(malloc, &nlv, &maxdeg, NULL, NULL, NULL,
+                NULL, NULL, NULL, NULL, NULL,
+                ilens, iexps, icomps, icfs, NULL, RES_FC, 0, NULL, &g5,
+                2, 1, 1, 0, 0, 0, 12, 1, 0, 2, 0) == 0,
+            "input homogeneous only for the heft is refused as multigraded");
+
+    /* ... and the very same input *is* accepted for the heft grading it is
+     * homogeneous for, which is what makes the refusal above about the
+     * grading rather than about the input */
+    icfs[0] = 1; icfs[1] = 1;
+    RES_CHECK(export_module_betti(malloc, &nlv, &maxdeg, NULL, NULL, NULL,
+                NULL, NULL, NULL, NULL, NULL,
+                ilens, iexps, icomps, icfs, NULL, RES_FC, 0, NULL, NULL,
+                2, 1, 1, 0, 0, 0, 12, 1, 0, 2, 0) > 0,
+            "the same input is accepted under the standard grading");
+}
+
+/* The resolution kept alive reports multidegrees too, and they have to be
+ * the ones the one shot entry point tabulates. */
+static void res_test_comp_multidegrees(
+        void
+        )
+{
+    const int32_t vdegs[8] = {1,0,  1,0,  0,1,  0,1};
+    const int32_t heft[2]  = {1, 1};
+    const res_grading_t grading = {2, 0, NULL, vdegs, heft};
+
+    const int32_t lens[3]   = {1, 1, 1};
+    const int32_t exps[12]  = {1,0,1,0,  0,1,0,1,  1,0,0,1};
+    const int32_t comps[3]  = {1, 1, 1};
+    int32_t cfs[3]          = {1, 1, 1};
+
+    res_comp_t *c = res_comp_new(lens, exps, comps, cfs, NULL, RES_FC, 0,
+            NULL, &grading, 4, 1, 3, 0, 12, 1, 0, 2, 0);
+
+    RES_CHECK(c != NULL, "a multigraded resolution handle is built");
+    if (c == NULL) {
+        return;
+    }
+
+    RES_CHECK(res_comp_glen(c) == 2,
+            "the handle reports the grading's degree length");
+
+    int32_t shift[2] = {-1, -1};
+    RES_CHECK(res_comp_multidegshift(c, shift) == 0
+            && shift[0] == 0 && shift[1] == 0,
+            "an unshifted ambient module has a zero multidegree shift");
+
+    /* level 1 is the Gröbner basis of (ac, bd, ad), every element of which
+     * sits in multidegree (1,1) */
+    const int32_t rk = res_comp_rank(c, 1);
+    RES_CHECK(rk == 3, "the multigraded frame has three level 1 elements");
+    if (rk > 0) {
+        int32_t *md = (int32_t *)malloc(
+                (unsigned long)rk * 2 * sizeof(int32_t));
+        int32_t *hd = (int32_t *)malloc(
+                (unsigned long)rk * sizeof(int32_t));
+        int ok = md != NULL && hd != NULL
+            && res_comp_multidegrees(c, 1, md) == 0
+            && res_comp_degrees(c, 1, hd) == 0;
+        int32_t k;
+        for (k = 0; ok && k < rk; ++k) {
+            if (md[2*k] != 1 || md[2*k+1] != 1 || hd[k] != 2) {
+                ok = 0;
+            }
+        }
+        RES_CHECK(ok, "every level 1 generator sits in multidegree (1,1), "
+                "of heft degree 2");
+        free(md);
+        free(hd);
+    }
+
+    res_comp_free(&c);
+    RES_CHECK(c == NULL, "the multigraded handle is nulled on free");
+}
+
 
 typedef struct res_res_t res_res_t;
 struct res_res_t
@@ -1041,7 +1651,7 @@ static int64_t res_run_resolution(
     r->nterms = export_module_resolution(malloc, &r->nlv, &r->ranks,
             &r->degs, &r->dlen, &r->dexp, &r->dcomp, &cf,
             lens, exps, comps, r->cfs, row_degs, RES_FC, 0 /* drl */,
-            strat, nv, nrows, ngens, max_level, syz_of,
+            strat, NULL, nv, nrows, ngens, max_level, syz_of,
             1 /* verify d o d = 0 exactly */,
             12 /* ht size */, 1 /* threads */, 0 /* max pairs */,
             2 /* la */, 0 /* info */);
@@ -1477,7 +2087,7 @@ static void res_test_resolution_matches_frame(
 
     int32_t nlv = 0, maxdeg = 0, *betti = NULL;
     export_module_frame(malloc, &nlv, &maxdeg, &betti,
-            lens, exps, comps, cfs, NULL, RES_FC, 0, res_strat_p(RES_MORD_POT),
+            lens, exps, comps, cfs, NULL, RES_FC, 0, res_strat_p(RES_MORD_POT), NULL,
             3, 1, 3, 0, 12, 1, 0, 2, 0);
 
     res_res_t r;
@@ -1741,9 +2351,9 @@ static void res_check_betti(
 
     memcpy(cfs, cfs_src, (unsigned long)nterms * sizeof(int32_t));
     const int64_t nelts = export_module_betti(malloc, &nlv, &maxdeg, &shift,
-            &tab, &num, &pdim, &reg, &dim, &deg,
+            &tab, &num, &pdim, &reg, &dim, &deg, NULL,
             lens, exps, comps, cfs, row_degs, 32003, 0 /* drl */,
-            res_strat_p(RES_MORD_POT), nv, nrows, ngens, 0 /* full */, 1 /* minimal */,
+            res_strat_p(RES_MORD_POT), NULL, nv, nrows, ngens, 0 /* full */, 1 /* minimal */,
             1 /* verify */, 12, 1, 0, 2, 0);
 
     RES_CHECK(nelts > 0 && tab != NULL && num != NULL, what);
@@ -1804,9 +2414,9 @@ static void res_check_betti(
 
     memcpy(cfs, cfs_src, (unsigned long)nterms * sizeof(int32_t));
     const int64_t fnelts = export_module_betti(malloc, &fnlv, &fmaxdeg, NULL,
-            &ftab, &fnum, NULL, NULL, NULL, NULL,
+            &ftab, &fnum, NULL, NULL, NULL, NULL, NULL,
             lens, exps, comps, cfs, row_degs, 32003, 0, res_strat_p(RES_MORD_POT),
-            nv, nrows, ngens, 0, 0 /* frame only */, 0, 12, 1, 0, 2, 0);
+            NULL, nv, nrows, ngens, 0, 0 /* frame only */, 0, 12, 1, 0, 2, 0);
 
     RES_CHECK(fnelts == nelts && fnlv == nlv && fmaxdeg == maxdeg
             && ftab != NULL && fnum != NULL,
@@ -1972,9 +2582,9 @@ static void res_test_betti_row_degrees(
 
     int32_t c2[4] = {1, 1, 1, 1};
     const int64_t n = export_module_betti(malloc, &nlv, &maxdeg, &shift,
-            &tab, NULL, &pdim, &reg, &dim, &deg,
+            &tab, NULL, &pdim, &reg, &dim, &deg, NULL,
             lens, exps, comps, c2, sd, 32003, 0, res_strat_p(RES_MORD_POT),
-            4, 2, 2, 0, 1, 1, 12, 1, 0, 2, 0);
+            NULL, 4, 2, 2, 0, 1, 1, 12, 1, 0, 2, 0);
 
     RES_CHECK(n > 0 && tab != NULL && shift == 5,
             "a global shift of the row degrees is reported, not baked in");
@@ -2078,9 +2688,9 @@ static void res_test_betti_truncation(
 
     int32_t c1[3] = {1, 1, 1};
     const int64_t n = export_module_betti(malloc, &nlv, &maxdeg, NULL,
-            &tab, NULL, NULL, NULL, NULL, NULL,
+            &tab, NULL, NULL, NULL, NULL, NULL, NULL,
             lens, exps, comps, c1, NULL, 32003, 0, res_strat_p(RES_MORD_POT),
-            3, 1, 3, 2 /* truncate */, 1, 1, 12, 1, 0, 2, 0);
+            NULL, 3, 1, 3, 2 /* truncate */, 1, 1, 12, 1, 0, 2, 0);
 
     /* The frame is built to level three so that beta_2 knows about d_3,
      * hence eight elements, but only levels zero to two are reported. */
@@ -2098,17 +2708,17 @@ static void res_test_betti_truncation(
                 "expected next\n");
     }
     RES_CHECK(export_module_betti(malloc, &nlv, &maxdeg, NULL,
-                &tab, &num, NULL, NULL, NULL, NULL,
+                &tab, &num, NULL, NULL, NULL, NULL, NULL,
                 lens, exps, comps, cfs, NULL, 32003, 0, res_strat_p(RES_MORD_POT),
-                3, 1, 3, 2, 1, 1, 12, 1, 0, 2, 0) == 0,
+                NULL, 3, 1, 3, 2, 1, 1, 12, 1, 0, 2, 0) == 0,
             "a truncated resolution has no Hilbert numerator");
     RES_CHECK(tab == NULL && num == NULL,
             "a rejected Betti call allocates nothing");
     RES_CHECK(export_module_betti(malloc, &nlv, &maxdeg, NULL,
-                &tab, NULL, NULL, NULL, NULL, NULL,
+                &tab, NULL, NULL, NULL, NULL, NULL, NULL,
                 lens, exps, comps, cfs, NULL, 32003, 0,
                 res_strat_p(RES_MORD_SCHREYER),
-                3, 1, 3, 0, 1, 1, 12, 1, 0, 2, 0) == 0,
+                NULL, 3, 1, 3, 0, 1, 1, 12, 1, 0, 2, 0) == 0,
             "the Schreyer order is refused as a base by the Betti table");
 }
 
@@ -2158,7 +2768,7 @@ static void res_check_comp(
     memcpy(cfs, cfs_src, (unsigned long)nt * sizeof(int32_t));
 
     res_comp_t *c = res_comp_new(lens, exps, comps, cfs, row_degs, RES_FC,
-            0 /* drl */, res_strat_p(RES_MORD_POT), nv, nrows, ngens, max_level,
+            0 /* drl */, res_strat_p(RES_MORD_POT), NULL, nv, nrows, ngens, max_level,
             12 /* ht size */, 1 /* threads */, 0 /* max pairs */,
             2 /* la */, 0 /* info */);
 
@@ -2372,7 +2982,7 @@ static void res_test_comp_degshift_and_truncation(
     const int32_t rd[2]    = {3, 3};
 
     res_comp_t *c = res_comp_new(lens, exps, comps, cfs, rd, RES_FC, 0,
-            res_strat_p(RES_MORD_POT), 4, 2, 3, 0, 12, 1, 0, 2, 0);
+            res_strat_p(RES_MORD_POT), NULL, 4, 2, 3, 0, 12, 1, 0, 2, 0);
     RES_CHECK(c != NULL, "the handle takes shifted row degrees");
     if (c == NULL) {
         return;
@@ -2388,7 +2998,7 @@ static void res_test_comp_degshift_and_truncation(
 
     /* the same input, cut off */
     int32_t cfs2[6] = {1, 1, 1, 1, 1, 1};
-    c = res_comp_new(lens, exps, comps, cfs2, rd, RES_FC, 0, res_strat_p(RES_MORD_POT),
+    c = res_comp_new(lens, exps, comps, cfs2, rd, RES_FC, 0, res_strat_p(RES_MORD_POT), NULL,
             4, 2, 3, 2, 12, 1, 0, 2, 0);
     RES_CHECK(c != NULL && res_comp_nlevels(c) == 3,
             "max_level truncates the handle's frame");
@@ -2420,21 +3030,21 @@ static void res_test_comp_rejects_bad_input(
     const int32_t comps[3] = {1, 1, 1};
 
     RES_CHECK(res_comp_new(lens, exps, comps, cfs, NULL, RES_FC, 0,
-                res_strat_p(RES_MORD_SCHREYER),
+                res_strat_p(RES_MORD_SCHREYER), NULL,
                 3, 1, 3, 0, 12, 1, 0, 2, 0) == NULL,
             "the handle refuses the Schreyer order as a base");
     res_strat_t bad = res_strat_default();
     bad.pos = 42;
     RES_CHECK(res_comp_new(lens, exps, comps, cfs, NULL, RES_FC, 0,
-                &bad, 3, 1, 3, 0, 12, 1, 0, 2, 0) == NULL,
+                &bad, NULL, 3, 1, 3, 0, 12, 1, 0, 2, 0) == NULL,
             "the handle refuses an unknown component direction");
     bad = res_strat_default();
     bad.lift = 42;
     RES_CHECK(res_comp_new(lens, exps, comps, cfs, NULL, RES_FC, 0,
-                &bad, 3, 1, 3, 0, 12, 1, 0, 2, 0) == NULL,
+                &bad, NULL, 3, 1, 3, 0, 12, 1, 0, 2, 0) == NULL,
             "the handle refuses an unknown lift");
     RES_CHECK(res_comp_new(lens, exps, comps, cfs, NULL, RES_FC, 0,
-                res_strat_p(RES_MORD_POT), 3, 1, 3, -1, 12, 1, 0, 2, 0) == NULL,
+                res_strat_p(RES_MORD_POT), NULL, 3, 1, 3, -1, 12, 1, 0, 2, 0) == NULL,
             "the handle refuses a negative truncation level");
 
     /* x + y^2 is not homogeneous, so it has no graded resolution */
@@ -2443,7 +3053,7 @@ static void res_test_comp_rejects_bad_input(
     const int32_t iexps[6]  = {1,0,0,  0,2,0};
     const int32_t icomps[2] = {1, 1};
     RES_CHECK(res_comp_new(ilens, iexps, icomps, icfs, NULL, RES_FC, 0,
-                res_strat_p(RES_MORD_POT), 3, 1, 1, 0, 12, 1, 0, 2, 0) == NULL,
+                res_strat_p(RES_MORD_POT), NULL, 3, 1, 1, 0, 12, 1, 0, 2, 0) == NULL,
             "the handle refuses inhomogeneous input");
 
     res_comp_t *nc = NULL;
@@ -2515,9 +3125,9 @@ static void res_check_strategies(
         int64_t deg = 0;
         int32_t *betti = NULL, *hilb = NULL;
         const int64_t n = export_module_betti(malloc, &nlv, &maxdeg, &shift,
-                &betti, &hilb, &pdim, &reg, &dim, &deg,
+                &betti, &hilb, &pdim, &reg, &dim, &deg, NULL,
                 lens, exps, comps, cfs, row_degs, RES_FC, 0, sp,
-                nv, nrows, ngens, 0 /* no ceiling */, 1 /* minimal */,
+                NULL, nv, nrows, ngens, 0 /* no ceiling */, 1 /* minimal */,
                 0 /* the exact d o d = 0 check runs below instead */,
                 12, 1, 0, 2, 0);
         free(cfs);
@@ -2752,6 +3362,15 @@ int main(void)
     res_test_comp_module();
     res_test_comp_degshift_and_truncation();
     res_test_comp_rejects_bad_input();
+    res_test_degree_buckets();
+    res_test_weighted_betti();
+    res_test_weighted_order();
+    res_test_multigraded_betti();
+    res_test_multigraded_module();
+    res_test_torsion_betti();
+    res_test_explicit_standard_grading();
+    res_test_grading_rejects_bad_input();
+    res_test_comp_multidegrees();
     res_test_strategy_names();
     res_test_strategies();
 

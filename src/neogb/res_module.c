@@ -41,13 +41,19 @@ static inline void set_module_exponent_vector(
 {
     len_t i;
 
-    const len_t nv    = ht->nv;
-    const exp_t comp  = (exp_t)icomp[idx];
+    const len_t nv          = ht->nv;
+    const exp_t comp        = (exp_t)icomp[idx];
+    const deg_t * const vwt = ht->vwt;
 
     ev[DEG] = 0;
     for (i = 0; i < nv; ++i) {
         ev[i+1]  = (exp_t)(iev+(nv*idx))[i];
-        ev[DEG]  = (exp_t)(ev[DEG] + ev[i+1]);
+        /* ev[DEG] is the *heft* degree: under the standard grading every
+         * weight is one and this is msolve's usual total degree, and vwt
+         * is NULL so the multiplication is not even compiled into the
+         * path that input takes */
+        ev[DEG]  = (exp_t)(ev[DEG]
+                + (vwt != NULL ? vwt[i+1] * ev[i+1] : ev[i+1]));
     }
     ev[DEG]      = (exp_t)(ev[DEG] + ht->cshift[comp]);
     ev[ht->cpos] = comp;
@@ -255,24 +261,137 @@ static int64_t export_module_data(
     return nterms;
 }
 
-/* Everything the module entry points have in common: validate the input,
- * build the meta data, import the presentation matrix and run F4.  On
- * success the caller owns the returned basis, *stp, and the shared hash
- * table data of the basis's hash table, and releases them with
- *
- *     free_shared_hash_data(gb->ht); free_basis(&gb); free(st);
- *
- * On failure NULL is returned, *stp is NULL, and everything this function
- * allocated has been released.
+/* Everything the module entry points have in common: the Gröbner basis,
+ * the grading it was computed under, and the normalized row degrees.  All
+ * of it is owned by the caller and released together by
+ * module_input_clear, which is safe on a partially filled struct. */
+typedef struct module_input_t module_input_t;
+struct module_input_t
+{
+    md_t       *st;
+    bs_t       *gb;
+    res_dgrp_t *grp;
+    int32_t    *rowmd;    /* nr_rows * grp->len, normalized as below   */
+    int32_t     degshift[RES_MTAB_MAXLEN];  /* what was subtracted     */
+    int         graded;   /* every generator is multihomogeneous       */
+};
+
+static void module_input_clear(
+        module_input_t *mi
+        )
+{
+    if (mi->gb != NULL) {
+        free_shared_hash_data(mi->gb->ht);
+        free_basis(&mi->gb);
+    }
+    res_dgrp_free(&mi->grp);
+    free(mi->rowmd);
+    free(mi->st);
+    memset(mi, 0, sizeof(module_input_t));
+}
+
+/* The heft degree of a raw multidegree.  heft_of never writes through the
+ * view, so handing it a pointer into a const array is sound. */
+static inline deg_t module_row_heft(
+        const res_dgrp_t * const g,
+        const int32_t * const d
+        )
+{
+    res_deg_t a;
+
+    a.e = (int32_t *)d;
+
+    return g->heft_of(g, a);
+}
+
+/* The same in 64 bits, for validating a caller's row degrees *before* any
+ * of them is subtracted.  deg_t is an int32_t and the caller's degrees are
+ * arbitrary int32_t, so both the heft and the difference of two row degrees
+ * can overflow -- and a row degree of INT32_MIN against one of INT32_MAX is
+ * exactly the input a caller would hand over to see it refused.  Refusing
+ * it must not itself be undefined. */
+static inline int64_t module_row_heft64(
+        const res_dgrp_t * const g,
+        const int32_t * const d
+        )
+{
+    len_t i;
+    int64_t h = 0;
+
+    for (i = 0; i < g->r; ++i) {
+        h += (int64_t)g->heft[i] * (int64_t)d[i];
+    }
+
+    return h;
+}
+
+/* The multidegree of one input term: the degree of its monomial plus the
+ * degree of the row it sits in.  res_deg_of_exponents works on the hash
+ * table's 16-bit exponents, and this is the raw int32 input, so the column
+ * sum is spelled out here rather than shared.  Torsion is reduced by the
+ * group's own addition, which is the only place that knows how. */
+static void module_term_multidegree(
+        const res_dgrp_t * const g,
+        int32_t *out,
+        const int32_t * const exps,
+        const int32_t * const rowmd
+        )
+{
+    len_t i, k;
+    const len_t r    = g->r;
+    const len_t glen = g->len;
+    const len_t nv   = g->nv;
+
+    int64_t acc[RES_MTAB_MAXLEN];
+
+    memset(acc, 0, (unsigned long)glen * sizeof(int64_t));
+    memset(out, 0, (unsigned long)glen * sizeof(int32_t));
+    for (k = 0; k < nv; ++k) {
+        const int32_t e = exps[k];
+        if (e == 0) {
+            continue;
+        }
+        const int32_t * const col = g->dmat + (unsigned long)k * glen;
+        for (i = 0; i < r; ++i) {
+            acc[i] += (int64_t)e * (int64_t)col[i];
+        }
+        for (i = r; i < glen; ++i) {
+            /* reduced every step, and the product formed in 64 bits, so
+             * neither the residue nor the multiplication can run away */
+            const int32_t t = g->tord[i-r];
+            out[i] = res_mod_torsion(
+                    out[i] + (int32_t)(((int64_t)e * col[i]) % t), t);
+        }
+    }
+    for (i = 0; i < r; ++i) {
+        out[i] = (int32_t)acc[i];
+    }
+
+    res_deg_t a = {out};
+    res_deg_t b = {(int32_t *)rowmd};
+    g->add(g, a, a, b);
+}
+
+/* Validate the input, build the grading, normalize the row degrees, build
+ * the meta data, import the presentation matrix and run F4.  Returns 0 on
+ * success, filling *mi; on failure everything allocated is released and
+ * *mi is zeroed, so module_input_clear on it is harmless either way.
  *
  * The strategy is validated here by res_strat_check, so every entry point
  * that reaches this one is checked before any work happens; NULL means
  * res_strat_default().  Its base is restricted to POT and TOP, the
  * Schreyer order as a base needing per component base monomials which
  * only the frame in res_frame.c can supply, and by then the Gröbner basis
- * is already in hand. */
-static bs_t *module_gb_from_input(
-        md_t **stp,
+ * is already in hand.
+ *
+ * The grading is validated the same way, and NULL means the standard one.
+ * Row degrees are normalized by subtracting the multidegree of the row of
+ * least heft, so that every component shift is a nonnegative heft degree
+ * that fits the 16-bit slot the hash table keeps it in -- which is the
+ * same normalization as before, since under the standard grading the heft
+ * of a row degree is the row degree. */
+static int module_gb_from_input(
+        module_input_t *mi,
         const int32_t *lens,
         const int32_t *exps,
         const int32_t *comps,
@@ -281,6 +400,7 @@ static bs_t *module_gb_from_input(
         const uint32_t field_char,
         const int32_t mon_order,
         const res_strat_t * const strat,
+        const res_grading_t * const grading,
         const int32_t nr_vars,
         const int32_t nr_rows,
         const int32_t nr_gens,
@@ -294,10 +414,10 @@ static bs_t *module_gb_from_input(
 {
     int32_t i, j;
 
-    *stp = NULL;
+    memset(mi, 0, sizeof(module_input_t));
 
     if (res_strat_check(strat, 1)) {
-        return NULL;
+        return 1;
     }
     const res_strat_t sdef = res_strat_default();
     const res_strat_t * const sp = strat != NULL ? strat : &sdef;
@@ -305,80 +425,171 @@ static bs_t *module_gb_from_input(
     if (field_char == 0 || field_char >= ((uint32_t)1 << 31)) {
         fprintf(ERRSTREAM, "Module Groebner bases need a prime field of "
                 "characteristic less than 2^31.\n");
-        return NULL;
+        return 1;
     }
     if (nr_rows < 1 || nr_gens < 1 || nr_vars < 1) {
         fprintf(ERRSTREAM, "Empty module input.\n");
-        return NULL;
+        return 1;
     }
     if (mon_order != 0) {
         fprintf(ERRSTREAM, "Module Groebner bases are only implemented for "
                 "the degree reverse lexicographic order.\n");
-        return NULL;
+        return 1;
     }
 
-    /* Validate all dimensions before anything is allocated.  The importer
-     * below uses int32_t offsets, while the hash table stores both individual
-     * exponents and shifted total degrees in exp_t.  Reject values that would
-     * otherwise be silently narrowed to a different monomial. */
+    /* --- the grading ------------------------------------------------- */
+
+    res_dgrp_t *grp = res_dgrp_of_grading(grading, nr_vars);
+    if (grp == NULL) {
+        return 1;
+    }
+    mi->grp = grp;
+
+    const len_t glen = grp->len;
+
+    /* Validate all dimensions before anything else is allocated.  The
+     * importer below uses int32_t offsets, while the hash table stores both
+     * individual exponents and shifted heft degrees in exp_t.  Reject values
+     * that would otherwise be silently narrowed to a different monomial. */
     int64_t nt = 0;
     for (i = 0; i < nr_gens; ++i) {
         if (lens[i] < 1) {
             fprintf(ERRSTREAM, "Generator %d has no terms.\n", i);
-            return NULL;
+            goto fail;
         }
         nt += lens[i];
         if (nt > INT32_MAX) {
             fprintf(ERRSTREAM, "Module input has too many terms.\n");
-            return NULL;
+            goto fail;
         }
     }
-    int32_t mn = 0;
+
+    /* --- row degrees, normalized to the row of least heft ------------- */
+
+    int32_t *rowmd = (int32_t *)calloc(
+            (unsigned long)nr_rows * (unsigned long)glen, sizeof(int32_t));
+    if (rowmd == NULL) {
+        goto fail;
+    }
+    mi->rowmd = rowmd;
+
     if (row_degs != NULL) {
-        mn = row_degs[0];
+        int32_t i0  = 0;
+        int64_t hmn = module_row_heft64(grp, row_degs);
         for (i = 1; i < nr_rows; ++i) {
-            if (row_degs[i] < mn) {
-                mn = row_degs[i];
+            const int64_t h = module_row_heft64(
+                    grp, row_degs + (int64_t)i * glen);
+            if (h < hmn) {
+                hmn = h;
+                i0  = i;
             }
         }
+
+        /* Everything is checked in 64 bits first, against the row that was
+         * picked, and only then subtracted: both the heft difference and
+         * the free part of the difference are int32_t quantities that a
+         * caller's degrees can overflow, and the whole point of the check
+         * is to be handed degrees that do. */
+        const int32_t * const base = row_degs + (int64_t)i0 * glen;
         for (i = 0; i < nr_rows; ++i) {
-            const int64_t shift = (int64_t)row_degs[i] - (int64_t)mn;
-            if (shift > UINT16_MAX) {
-                fprintf(ERRSTREAM, "Row degree %d is too far from the "
-                        "minimum row degree to fit in the exponent table.\n",
-                        i);
-                return NULL;
+            const int32_t * const rd = row_degs + (int64_t)i * glen;
+            const int64_t shift = module_row_heft64(grp, rd) - hmn;
+            if (shift < 0 || shift > UINT16_MAX) {
+                fprintf(ERRSTREAM, "Row %d has heft degree %ld relative to "
+                        "the lightest row, which does not fit in the "
+                        "exponent table.\n", i, (long)shift);
+                goto fail;
             }
+            for (j = 0; j < grp->r; ++j) {
+                const int64_t v = (int64_t)rd[j] - (int64_t)base[j];
+                if (v < INT32_MIN || v > INT32_MAX) {
+                    fprintf(ERRSTREAM, "Row %d has a degree too far from the "
+                            "lightest row to normalize against it.\n", i);
+                    goto fail;
+                }
+            }
+        }
+
+        memcpy(mi->degshift, base, (unsigned long)glen * sizeof(int32_t));
+
+        res_deg_t vbase = {mi->degshift};
+        for (i = 0; i < nr_rows; ++i) {
+            res_deg_t d = {rowmd + (int64_t)i * glen};
+            res_deg_t s = {(int32_t *)(row_degs + (int64_t)i * glen)};
+            grp->sub(grp, d, s, vbase);
         }
     }
+
+    /* --- every term: bounds, and the multidegree it sits in ----------- */
+
+    const deg_t * const vhdeg = grp->vhdeg;
+
     for (j = 0; j < nt; ++j) {
         if (comps[j] < 1 || comps[j] > nr_rows) {
             fprintf(ERRSTREAM, "Term %d has component %d, outside the range "
                     "1 to %d.\n", j, comps[j], nr_rows);
-            return NULL;
+            goto fail;
         }
-        int64_t deg = row_degs != NULL
-            ? (int64_t)row_degs[comps[j]-1] - (int64_t)mn : 0;
+        int64_t deg = module_row_heft(grp, rowmd + (int64_t)(comps[j]-1) * glen);
         for (i = 0; i < nr_vars; ++i) {
             const int32_t exponent = exps[(int64_t)j * nr_vars + i];
             if (exponent < 0 || exponent > UINT16_MAX) {
                 fprintf(ERRSTREAM, "Term %d has exponent %d, outside the "
                         "16-bit exponent range.\n", j, exponent);
-                return NULL;
+                goto fail;
             }
-            deg += exponent;
+            deg += (int64_t)exponent * (int64_t)vhdeg[i];
         }
         if (deg > UINT16_MAX) {
-            fprintf(ERRSTREAM, "Term %d has shifted total degree %ld, outside "
+            fprintf(ERRSTREAM, "Term %d has shifted heft degree %ld, outside "
                     "the 16-bit exponent range.\n", j, (long)deg);
-            return NULL;
+            goto fail;
         }
+    }
+
+    /* Multihomogeneity.  With the standard grading this is exactly the
+     * heft homogeneity import_module_input_data goes on to compute, so
+     * nothing changes there; with any other it is strictly stronger, and it
+     * is what every graded output here means.  Checking it on the input
+     * rather than on the basis is the cheap place: the Gröbner basis of a
+     * multihomogeneous module is multihomogeneous. */
+    {
+        int32_t *da = (int32_t *)calloc((unsigned long)glen, sizeof(int32_t));
+        int32_t *db = (int32_t *)calloc((unsigned long)glen, sizeof(int32_t));
+        if (da == NULL || db == NULL) {
+            free(da);
+            free(db);
+            goto fail;
+        }
+        mi->graded  = 1;
+        int64_t off = 0;
+        for (i = 0; i < nr_gens; ++i) {
+            for (j = 0; j < lens[i]; ++j) {
+                const int64_t t = off + j;
+                int32_t * const cur = j == 0 ? da : db;
+                module_term_multidegree(grp, cur,
+                        exps + t * nr_vars,
+                        rowmd + (int64_t)(comps[t]-1) * glen);
+                if (j > 0 && memcmp(da, db,
+                            (unsigned long)glen * sizeof(int32_t)) != 0) {
+                    mi->graded = 0;
+                    break;
+                }
+            }
+            if (!mi->graded) {
+                break;
+            }
+            off += lens[i];
+        }
+        free(da);
+        free(db);
     }
 
     md_t *st = allocate_meta_data();
     if (st == NULL) {
-        return NULL;
+        goto fail;
     }
+    mi->st = st;
 
     int32_t elim_block_len = 0, nr_nf = 0, reset_ht = 0, use_signatures = 0;
     int32_t pbm_file = 0, truncate_lifting = 0;
@@ -396,8 +607,7 @@ static bs_t *module_gb_from_input(
             &l_info_level);
     if (res == -1) {
         free(invalid_gens);
-        free(st);
-        return NULL;
+        goto fail;
     }
     if (check_and_set_meta_data(st, lens, exps, cfs, invalid_gens,
                 l_field_char, l_mon_order, elim_block_len, l_nr_vars,
@@ -405,8 +615,7 @@ static bs_t *module_gb_from_input(
                 reset_ht, l_la_option, use_signatures, l_reduce_gb, pbm_file,
                 truncate_lifting, l_info_level)) {
         free(invalid_gens);
-        free(st);
-        return NULL;
+        goto fail;
     }
 
     /* this is what makes the hash table a module one; it has to happen
@@ -419,14 +628,38 @@ static bs_t *module_gb_from_input(
     bs_t *bs  = initialize_basis(st, NULL);
     ht_t *bht = bs->ht;
 
-    /* Degree shifts of the ambient free module.  msolve keeps degrees in a
-     * uint16_t, so they are normalized to start at zero; a global shift of
-     * all row degrees changes neither the module nor its Groebner basis,
-     * only the absolute degrees, which the caller can put back. */
-    if (row_degs != NULL) {
-        for (i = 0; i < nr_rows; ++i) {
-            bht->cshift[i+1] = (deg_t)((int64_t)row_degs[i] - (int64_t)mn);
+    /* Variable weights.  Leaving this NULL under the standard grading is
+     * not an optimization but the guarantee that the unweighted path is
+     * the one it always was: every reader checks for NULL and takes the
+     * old branch.  It has to be in place before core_gba, since the
+     * secondary hash tables built in there share it by pointer. */
+    int unit_weights = 1;
+    for (i = 0; i < nr_vars; ++i) {
+        if (grp->vhdeg[i] != 1) {
+            unit_weights = 0;
+            break;
         }
+    }
+    if (!unit_weights) {
+        bht->vwt = (deg_t *)calloc((unsigned long)bht->evl, sizeof(deg_t));
+        if (bht->vwt == NULL) {
+            free(invalid_gens);
+            free_shared_hash_data(bht);
+            free_basis(&bs);
+            goto fail;
+        }
+        for (i = 0; i < nr_vars; ++i) {
+            bht->vwt[i+1] = grp->vhdeg[i];
+        }
+    }
+
+    /* Degree shifts of the ambient free module, as heft degrees, which is
+     * what ev[DEG] carries.  They are normalized to start at zero because
+     * msolve keeps a degree in a uint16_t; a global shift of all row
+     * degrees changes neither the module nor its Gröbner basis, only the
+     * absolute degrees, which the caller puts back from degshift. */
+    for (i = 0; i < nr_rows; ++i) {
+        bht->cshift[i+1] = module_row_heft(grp, rowmd + (int64_t)i * glen);
     }
 
     import_module_input_data(bs, st, 0, st->ngens_input,
@@ -447,17 +680,18 @@ static bs_t *module_gb_from_input(
 
     if (gb == NULL || err > 0) {
         fprintf(ERRSTREAM, "Module Groebner basis computation failed.\n");
-        if (gb != NULL) {
-            free_shared_hash_data(gb->ht);
-            free_basis(&gb);
-        }
-        free(st);
-        return NULL;
+        mi->gb = gb;
+        goto fail;
     }
 
-    *stp = st;
+    mi->gb = gb;
 
-    return gb;
+    return 0;
+
+fail:
+    module_input_clear(mi);
+
+    return 1;
 }
 
 /* Frames and resolutions are graded objects: every degree they report,
@@ -467,15 +701,16 @@ static bs_t *module_gb_from_input(
  * module_gb_from_input.  st->homogeneous is set by
  * import_module_input_data and already accounts for the component shifts. */
 static int module_input_is_graded(
-        const md_t * const st
+        const module_input_t * const mi
         )
 {
-    if (st->homogeneous) {
+    if (mi->st->homogeneous && mi->graded) {
         return 1;
     }
     fprintf(ERRSTREAM, "The input is not homogeneous, so it has no graded "
             "free resolution; check the degree shifts of the ambient free "
-            "module.\n");
+            "module%s.\n", mi->grp->simple
+            ? "" : " and the degrees of the variables");
 
     return 0;
 }
@@ -521,6 +756,7 @@ int64_t export_module_f4(
         const uint32_t field_char,
         const int32_t mon_order,
         const res_strat_t * const strat,
+        const res_grading_t * const grading,
         const int32_t nr_vars,
         const int32_t nr_rows,
         const int32_t nr_gens,
@@ -533,7 +769,7 @@ int64_t export_module_f4(
         )
 {
     int64_t nterms = 0;
-    md_t *st = NULL;
+    module_input_t mi;
 
     *bld   = 0;
     *blen  = NULL;
@@ -541,22 +777,17 @@ int64_t export_module_f4(
     *bcomp = NULL;
     *bcf   = NULL;
 
-    bs_t *gb = module_gb_from_input(&st, lens, exps, comps, cfs, row_degs,
-            field_char, mon_order, strat, nr_vars, nr_rows, nr_gens,
-            ht_size, nr_threads, max_nr_pairs, la_option, reduce_gb,
-            info_level);
-    if (gb == NULL) {
+    if (module_gb_from_input(&mi, lens, exps, comps, cfs, row_degs,
+                field_char, mon_order, strat, grading, nr_vars, nr_rows,
+                nr_gens, ht_size, nr_threads, max_nr_pairs, la_option,
+                reduce_gb, info_level)) {
         return 0;
     }
 
-    ht_t *bht = gb->ht;
-
     nterms = export_module_data(
-            bld, blen, bexp, bcomp, bcf, mallocp, gb, bht, st);
+            bld, blen, bexp, bcomp, bcf, mallocp, mi.gb, mi.gb->ht, mi.st);
 
-    free_shared_hash_data(bht);
-    free_basis(&gb);
-    free(st);
+    module_input_clear(&mi);
 
     return nterms;
 }
@@ -589,6 +820,7 @@ int64_t export_module_frame(
         const uint32_t field_char,
         const int32_t mon_order,
         const res_strat_t * const strat,
+        const res_grading_t * const grading,
         const int32_t nr_vars,
         const int32_t nr_rows,
         const int32_t nr_gens,
@@ -600,9 +832,9 @@ int64_t export_module_frame(
         const int32_t info_level
         )
 {
-    int32_t i;
     int64_t nelts = 0;
-    md_t *st      = NULL;
+    module_input_t mi;
+    res_frame_t *f = NULL;
 
     *nlevels = 0;
     *maxdeg  = 0;
@@ -612,39 +844,27 @@ int64_t export_module_frame(
      * the minimal generators of the module of lead terms; a non-reduced
      * basis would carry redundant elements into level 1 and inflate every
      * level above it. */
-    bs_t *gb = module_gb_from_input(&st, lens, exps, comps, cfs, row_degs,
-            field_char, mon_order, strat, nr_vars, nr_rows, nr_gens,
-            ht_size, nr_threads, max_nr_pairs, la_option, 1 /* reduce */,
-            info_level);
-    if (gb == NULL) {
+    if (module_gb_from_input(&mi, lens, exps, comps, cfs, row_degs,
+                field_char, mon_order, strat, grading, nr_vars, nr_rows,
+                nr_gens, ht_size, nr_threads, max_nr_pairs, la_option,
+                1 /* reduce */, info_level)) {
         return 0;
     }
 
-    ht_t *bht = gb->ht;
+    ht_t *bht = mi.gb->ht;
 
-    if (!module_input_is_graded(st)) {
-        free_shared_hash_data(bht);
-        free_basis(&gb);
-        free(st);
+    if (!module_input_is_graded(&mi)) {
+        module_input_clear(&mi);
         return 0;
     }
 
-    /* Multigraded frames are M6; here the grading is the standard one and
-     * the row degrees supply the only shifts, matching bht->cshift. */
-    res_dgrp_t *grp = res_dgrp_new_standard(nr_vars);
-    int32_t *rowmd  = (int32_t *)calloc(
-            (unsigned long)nr_rows, sizeof(int32_t));
-    res_frame_t *f  = grp != NULL ? res_frame_new(grp, st, max_level) : NULL;
-
-    if (grp == NULL || rowmd == NULL || f == NULL) {
+    f = res_frame_new(mi.grp, mi.st, max_level);
+    if (f == NULL) {
         fprintf(ERRSTREAM, "Could not set up the Schreyer frame.\n");
         goto cleanup;
     }
-    for (i = 0; i < nr_rows; ++i) {
-        rowmd[i] = (int32_t)bht->cshift[i+1];
-    }
 
-    if (res_frame_init(f, gb, bht, rowmd)) {
+    if (res_frame_init(f, mi.gb, bht, mi.rowmd)) {
         goto cleanup;
     }
     nelts = res_frame_complete(f);
@@ -695,11 +915,7 @@ int64_t export_module_frame(
 
 cleanup:
     res_frame_free(&f);
-    res_dgrp_free(&grp);
-    free(rowmd);
-    free_shared_hash_data(bht);
-    free_basis(&gb);
-    free(st);
+    module_input_clear(&mi);
 
     return nelts;
 }
@@ -860,6 +1076,7 @@ static int64_t module_syz_of_input(
         const uint32_t field_char,
         const int32_t mon_order,
         const res_strat_t * const strat,
+        const res_grading_t * const grading,
         const int32_t nr_vars,
         const int32_t nr_rows,
         const int32_t nr_gens,
@@ -873,17 +1090,28 @@ static int64_t module_syz_of_input(
 {
     int32_t i, j;
     int64_t t, nterms = 0;
-    md_t *st = NULL;
-    bs_t *gb = NULL;
+    module_input_t mi;
 
     int32_t *lens2 = NULL, *exps2 = NULL, *comps2 = NULL, *cfs2 = NULL;
     int32_t *rdeg  = NULL, *sylen = NULL;
     int64_t *syidx = NULL;
+    res_dgrp_t *grp = NULL;
+
+    memset(&mi, 0, sizeof(module_input_t));
 
     if (nr_rows < 1 || nr_gens < 1 || nr_vars < 1) {
         fprintf(ERRSTREAM, "Empty module input.\n");
         return 0;
     }
+
+    /* The grading is needed here, before the Gröbner basis, because the
+     * adjoined component of generator j carries that generator's own
+     * multidegree and there is nowhere else to compute it. */
+    grp = res_dgrp_of_grading(grading, nr_vars);
+    if (grp == NULL) {
+        return 0;
+    }
+    const len_t glen = grp->len;
 
     int64_t nt = 0;
     for (i = 0; i < nr_gens; ++i) {
@@ -922,38 +1150,30 @@ static int64_t module_syz_of_input(
             (size_t)nt2 * sizeof(int32_t));
     cfs2   = (int32_t *)malloc(
             (size_t)nt2 * sizeof(int32_t));
-    rdeg   = (int32_t *)malloc((unsigned long)nr2 * sizeof(int32_t));
+    rdeg   = (int32_t *)calloc(
+            (unsigned long)nr2 * (unsigned long)glen, sizeof(int32_t));
     if (lens2 == NULL || exps2 == NULL || comps2 == NULL
             || cfs2 == NULL || rdeg == NULL) {
         goto cleanup;
     }
 
-    /* Degrees, normalized to start at zero exactly as export_module_f4
-     * does, so that both entry points report the same table. */
-    int32_t mn = 0;
+    /* Row degrees are passed through unnormalized; module_gb_from_input
+     * applies the same normalization every other entry point gets, so both
+     * report the same table. */
     if (row_degs != NULL) {
-        mn = row_degs[0];
-        for (i = 1; i < nr_rows; ++i) {
-            if (row_degs[i] < mn) {
-                mn = row_degs[i];
-            }
-        }
-    }
-    for (i = 0; i < nr_rows; ++i) {
-        rdeg[i] = row_degs != NULL ? row_degs[i] - mn : 0;
+        memcpy(rdeg, row_degs,
+                (unsigned long)nr_rows * (unsigned long)glen * sizeof(int32_t));
     }
 
     const int32_t *icf = (const int32_t *)cfs;
     int64_t off = 0, off2 = 0;
     for (i = 0; i < nr_gens; ++i) {
         lens2[i] = lens[i] + 1;
-        /* the generator's degree, read off its first term; for the graded
-         * input this machinery is about, every term agrees */
-        int32_t d = rdeg[comps[off] - 1];
-        for (j = 0; j < nr_vars; ++j) {
-            d += exps[off * nr_vars + j];
-        }
-        rdeg[nr_rows + i] = d;
+        /* the generator's multidegree, read off its first term; for the
+         * graded input this machinery is about, every term agrees */
+        module_term_multidegree(grp, rdeg + (int64_t)(nr_rows + i) * glen,
+                exps + off * nr_vars,
+                rdeg + (int64_t)(comps[off] - 1) * glen);
 
         for (t = 0; t < lens[i]; ++t) {
             for (j = 0; j < nr_vars; ++j) {
@@ -970,18 +1190,19 @@ static int64_t module_syz_of_input(
         off2 += lens2[i];
     }
 
-    gb = module_gb_from_input(&st, lens2, exps2, comps2, cfs2, rdeg,
-            field_char, mon_order, strat, nr_vars, nr2, nr_gens,
-            ht_size, nr_threads, max_nr_pairs, la_option, 1 /* reduce */,
-            info_level);
-    if (gb == NULL) {
+    if (module_gb_from_input(&mi, lens2, exps2, comps2, cfs2, rdeg,
+                field_char, mon_order, strat, grading, nr_vars, nr2,
+                nr_gens, ht_size, nr_threads, max_nr_pairs, la_option,
+                1 /* reduce */, info_level)) {
         goto cleanup;
     }
-    if (!module_input_is_graded(st)) {
+    if (!module_input_is_graded(&mi)) {
         goto cleanup;
     }
 
-    ht_t *bht = gb->ht;
+    bs_t * const gb = mi.gb;
+    md_t * const st = mi.st;
+    ht_t *bht       = gb->ht;
 
     /* pick out the elements supported in the adjoined components */
     sylen = (int32_t *)malloc(
@@ -1059,8 +1280,10 @@ static int64_t module_syz_of_input(
     }
 
     int64_t cg = 0, cl = 0, ce = 0, cc = 0;
+    /* the *normalized* heft degrees, which is what every other entry point
+     * reports and what bht->cshift was built from */
     for (i = 0; i < nr2; ++i) {
-        dg[cg++] = rdeg[i];
+        dg[cg++] = module_row_heft(grp, mi.rowmd + (int64_t)i * glen);
     }
 
     /* d_1 is the caller's matrix, only reduced into [0, p) */
@@ -1123,11 +1346,8 @@ cleanup:
     free(rdeg);
     free(sylen);
     free(syidx);
-    if (gb != NULL) {
-        free_shared_hash_data(gb->ht);
-        free_basis(&gb);
-    }
-    free(st);
+    res_dgrp_free(&grp);
+    module_input_clear(&mi);
 
     return nterms;
 }
@@ -1149,6 +1369,7 @@ int64_t export_module_resolution(
         const uint32_t field_char,
         const int32_t mon_order,
         const res_strat_t * const strat,
+        const res_grading_t * const grading,
         const int32_t nr_vars,
         const int32_t nr_rows,
         const int32_t nr_gens,
@@ -1162,9 +1383,12 @@ int64_t export_module_resolution(
         const int32_t info_level
         )
 {
-    int32_t i;
     int64_t nterms = 0;
-    md_t *st       = NULL;
+    module_input_t mi;
+    res_frame_t *f = NULL;
+    res_diff_t *rd = NULL;
+
+    memset(&mi, 0, sizeof(module_input_t));
 
     *nlevels = 0;
     *ranks   = NULL;
@@ -1188,7 +1412,7 @@ int64_t export_module_resolution(
         }
         return module_syz_of_input(mallocp, nlevels, ranks, degs,
                 dlen, dexp, dcomp, dcf, lens, exps, comps, cfs, row_degs,
-                field_char, mon_order, strat, nr_vars, nr_rows,
+                field_char, mon_order, strat, grading, nr_vars, nr_rows,
                 nr_gens, ht_size, nr_threads, max_nr_pairs, la_option,
                 info_level, max_level == 0 ? 2 : max_level);
     }
@@ -1199,50 +1423,39 @@ int64_t export_module_resolution(
 
     /* As for the frame: the lead terms have to be the minimal generators
      * of the module of lead terms, which is what reducing gives. */
-    bs_t *gb = module_gb_from_input(&st, lens, exps, comps, cfs, row_degs,
-            field_char, mon_order, strat, nr_vars, nr_rows, nr_gens,
-            ht_size, nr_threads, max_nr_pairs, la_option, 1 /* reduce */,
-            info_level);
-    if (gb == NULL) {
+    if (module_gb_from_input(&mi, lens, exps, comps, cfs, row_degs,
+                field_char, mon_order, strat, grading, nr_vars, nr_rows,
+                nr_gens, ht_size, nr_threads, max_nr_pairs, la_option,
+                1 /* reduce */, info_level)) {
         return 0;
     }
 
-    ht_t *bht = gb->ht;
+    ht_t *bht = mi.gb->ht;
 
-    if (!module_input_is_graded(st)) {
-        free_shared_hash_data(bht);
-        free_basis(&gb);
-        free(st);
+    if (!module_input_is_graded(&mi)) {
+        module_input_clear(&mi);
         return 0;
     }
 
-    res_dgrp_t *grp  = res_dgrp_new_standard(nr_vars);
-    int32_t *rowmd   = (int32_t *)calloc(
-            (unsigned long)nr_rows, sizeof(int32_t));
-    res_frame_t *f   = grp != NULL ? res_frame_new(grp, st, max_level) : NULL;
-    res_diff_t *rd   = NULL;
-
-    if (grp == NULL || rowmd == NULL || f == NULL) {
+    f = res_frame_new(mi.grp, mi.st, max_level);
+    if (f == NULL) {
         fprintf(ERRSTREAM, "Could not set up the Schreyer frame.\n");
         goto cleanup;
     }
-    for (i = 0; i < nr_rows; ++i) {
-        rowmd[i] = (int32_t)bht->cshift[i+1];
-    }
 
-    if (res_frame_init(f, gb, bht, rowmd)) {
+    if (res_frame_init(f, mi.gb, bht, mi.rowmd)) {
         goto cleanup;
     }
     if (res_frame_complete(f) < 0 || res_frame_verify(f)) {
         goto cleanup;
     }
 
-    rd = res_diff_new(f, st->fc);
+    rd = res_diff_new(f, mi.st->fc);
     if (rd == NULL) {
         fprintf(ERRSTREAM, "Could not set up the differential.\n");
         goto cleanup;
     }
-    if (res_diff_init(rd, gb, bht, st) || res_diff_compute(rd)) {
+    if (res_diff_init(rd, mi.gb, bht, mi.st) || res_diff_compute(rd)) {
         goto cleanup;
     }
     if (res_diff_verify(rd, verify != 0)) {
@@ -1256,11 +1469,7 @@ int64_t export_module_resolution(
 cleanup:
     res_diff_free(&rd);
     res_frame_free(&f);
-    res_dgrp_free(&grp);
-    free(rowmd);
-    free_shared_hash_data(bht);
-    free_basis(&gb);
-    free(st);
+    module_input_clear(&mi);
 
     return nterms;
 }
@@ -1285,6 +1494,33 @@ void free_module_betti_result_data(
     }
 }
 
+void free_module_mtable_data(
+        void (*freep) (void *),
+        res_mtable_t *mtab
+        )
+{
+    if (mtab == NULL) {
+        return;
+    }
+    if (mtab->degs != NULL) {
+        (*freep)(mtab->degs);
+        mtab->degs = NULL;
+    }
+    if (mtab->heft != NULL) {
+        (*freep)(mtab->heft);
+        mtab->heft = NULL;
+    }
+    if (mtab->betti != NULL) {
+        (*freep)(mtab->betti);
+        mtab->betti = NULL;
+    }
+    if (mtab->hilbnum != NULL) {
+        (*freep)(mtab->hilbnum);
+        mtab->hilbnum = NULL;
+    }
+    mtab->ndegs = 0;
+}
+
 int64_t export_module_betti(
         void *(*mallocp) (size_t),
         int32_t *nlevels,
@@ -1296,6 +1532,7 @@ int64_t export_module_betti(
         int32_t *reg,
         int32_t *dimension,
         int64_t *degree,
+        res_mtable_t *mtab,
         const int32_t *lens,
         const int32_t *exps,
         const int32_t *comps,
@@ -1304,6 +1541,7 @@ int64_t export_module_betti(
         const uint32_t field_char,
         const int32_t mon_order,
         const res_strat_t * const strat,
+        const res_grading_t * const grading,
         const int32_t nr_vars,
         const int32_t nr_rows,
         const int32_t nr_gens,
@@ -1317,12 +1555,15 @@ int64_t export_module_betti(
         const int32_t info_level
         )
 {
-    int32_t i;
     int64_t nelts   = 0;
-    md_t *st        = NULL;
+    module_input_t mi;
     res_betti_t *bt = NULL;
+    res_frame_t *f  = NULL;
+    res_diff_t *rd  = NULL;
     int32_t *tab    = NULL;
     int32_t *num    = NULL;
+
+    memset(&mi, 0, sizeof(module_input_t));
 
     *nlevels = 0;
     *maxdeg  = 0;
@@ -1335,66 +1576,51 @@ int64_t export_module_betti(
     if (hilbnum != NULL) {
         *hilbnum = NULL;
     }
+    if (mtab != NULL) {
+        memset(mtab, 0, sizeof(res_mtable_t));
+    }
 
     if (max_level < 0) {
         fprintf(ERRSTREAM, "A negative truncation level makes no sense.\n");
         return 0;
     }
 
-    /* module_gb_from_input normalizes the row degrees to start at zero.
-     * The tables are arrays indexed by degree and so have to stay on that
-     * scale, with degshift reporting the offset; the scalars below do not,
-     * and are reported in the caller's own degrees. */
-    int32_t dshift = 0;
-    if (row_degs != NULL && nr_rows > 0) {
-        dshift = row_degs[0];
-        for (i = 1; i < nr_rows; ++i) {
-            if (row_degs[i] < dshift) {
-                dshift = row_degs[i];
-            }
-        }
+    if (module_gb_from_input(&mi, lens, exps, comps, cfs, row_degs,
+                field_char, mon_order, strat, grading, nr_vars, nr_rows,
+                nr_gens, ht_size, nr_threads, max_nr_pairs, la_option,
+                1 /* reduce */, info_level)) {
+        return 0;
     }
+
+    ht_t *bht = mi.gb->ht;
+
+    if (!module_input_is_graded(&mi)) {
+        module_input_clear(&mi);
+        return 0;
+    }
+
+    /* module_gb_from_input normalizes the row degrees by subtracting the
+     * multidegree of the lightest row.  The tables are arrays indexed by
+     * degree and so have to stay on that scale, with degshift reporting the
+     * offset; the scalars below do not, and are in the caller's own
+     * degrees. */
+    const len_t glen     = mi.grp->len;
+    const int32_t dshift = module_row_heft(mi.grp, mi.degshift);
     if (degshift != NULL) {
         *degshift = dshift;
     }
 
-    bs_t *gb = module_gb_from_input(&st, lens, exps, comps, cfs, row_degs,
-            field_char, mon_order, strat, nr_vars, nr_rows, nr_gens,
-            ht_size, nr_threads, max_nr_pairs, la_option, 1 /* reduce */,
-            info_level);
-    if (gb == NULL) {
-        return 0;
-    }
-
-    ht_t *bht = gb->ht;
-
-    if (!module_input_is_graded(st)) {
-        free_shared_hash_data(bht);
-        free_basis(&gb);
-        free(st);
-        return 0;
-    }
-
-    res_dgrp_t *grp = res_dgrp_new_standard(nr_vars);
-    int32_t *rowmd  = (int32_t *)calloc(
-            (unsigned long)nr_rows, sizeof(int32_t));
     /* One level past what is reported: beta_{i,d} reads the rank of
      * d_{i+1} as well as of d_i, so the top level of a truncated table is
      * only right if the level above it was built.  Macaulay2's
      * minimalBetti does the same. */
-    res_frame_t *f  = grp != NULL
-        ? res_frame_new(grp, st, max_level > 0 ? max_level + 1 : 0) : NULL;
-    res_diff_t *rd  = NULL;
-
-    if (grp == NULL || rowmd == NULL || f == NULL) {
+    f = res_frame_new(mi.grp, mi.st, max_level > 0 ? max_level + 1 : 0);
+    if (f == NULL) {
         fprintf(ERRSTREAM, "Could not set up the Schreyer frame.\n");
         goto cleanup;
     }
-    for (i = 0; i < nr_rows; ++i) {
-        rowmd[i] = (int32_t)bht->cshift[i+1];
-    }
 
-    if (res_frame_init(f, gb, bht, rowmd)) {
+    if (res_frame_init(f, mi.gb, bht, mi.rowmd)) {
         goto cleanup;
     }
     nelts = res_frame_complete(f);
@@ -1422,13 +1648,13 @@ int64_t export_module_betti(
     }
 
     if (minimal) {
-        rd = res_diff_new(f, st->fc);
+        rd = res_diff_new(f, mi.st->fc);
         if (rd == NULL) {
             fprintf(ERRSTREAM, "Could not set up the differential.\n");
             nelts = 0;
             goto cleanup;
         }
-        if (res_diff_init(rd, gb, bht, st) || res_diff_compute(rd)) {
+        if (res_diff_init(rd, mi.gb, bht, mi.st) || res_diff_compute(rd)) {
             nelts = 0;
             goto cleanup;
         }
@@ -1484,6 +1710,53 @@ int64_t export_module_betti(
         memcpy(num, bt->hilb, nd * sizeof(int32_t));
         *hilbnum = num;
     }
+
+    /* The multigraded table, whose rows are the same levels the heft table
+     * reports and whose columns are the multidegrees that occur.  Allocated
+     * last and all at once: mallocp has no matching free, so nothing here
+     * may be abandoned, and by this point nothing downstream can fail. */
+    if (mtab != NULL) {
+        const size_t mtsz = (size_t)rlv * (size_t)bt->ndeg * sizeof(int32_t);
+
+        mtab->nlevels = (int32_t)rlv;
+        mtab->ndegs   = (int32_t)bt->ndeg;
+        mtab->dlen    = (int32_t)glen;
+        memcpy(mtab->degshift, mi.degshift,
+                (unsigned long)glen * sizeof(int32_t));
+
+        if (bt->ndeg > 0) {
+            mtab->degs = (int32_t *)(*mallocp)(
+                    (size_t)bt->ndeg * (size_t)glen * sizeof(int32_t));
+            mtab->heft = (int32_t *)(*mallocp)(
+                    (size_t)bt->ndeg * sizeof(int32_t));
+            mtab->betti = (int32_t *)(*mallocp)(mtsz);
+            /* The multigraded numerator is the same alternating sum over
+             * every level the heft indexed one is, so a truncated frame
+             * does not know it either; it is left NULL rather than filled
+             * in wrongly.  Asking for hilbnum outright is refused above,
+             * but mtab carries the two together. */
+            mtab->hilbnum = complete ? (int32_t *)(*mallocp)(
+                    (size_t)bt->ndeg * sizeof(int32_t)) : NULL;
+            if (mtab->degs == NULL || mtab->heft == NULL
+                    || mtab->betti == NULL
+                    || (complete && mtab->hilbnum == NULL)) {
+                fprintf(ERRSTREAM,
+                        "Could not allocate the multigraded Betti table.\n");
+                nelts = 0;
+                goto cleanup;
+            }
+            memcpy(mtab->degs, bt->mdegs,
+                    (size_t)bt->ndeg * (size_t)glen * sizeof(int32_t));
+            memcpy(mtab->betti, bt->mbetti, mtsz);
+            if (complete) {
+                memcpy(mtab->hilbnum, bt->mhilb,
+                        (size_t)bt->ndeg * sizeof(int32_t));
+            }
+            for (hl_t u = 0; u < bt->ndeg; ++u) {
+                mtab->heft[u] = (int32_t)bt->mheft[u];
+            }
+        }
+    }
     const int32_t xpd = res_betti_pdim(bt);
     if (pdim != NULL) {
         *pdim = xpd;
@@ -1506,11 +1779,7 @@ cleanup:
     res_betti_free(&bt);
     res_diff_free(&rd);
     res_frame_free(&f);
-    res_dgrp_free(&grp);
-    free(rowmd);
-    free_shared_hash_data(bht);
-    free_basis(&gb);
-    free(st);
+    module_input_clear(&mi);
 
     return nelts;
 }
@@ -1544,7 +1813,8 @@ struct res_comp_t
     res_dgrp_t  *grp;
     res_frame_t *f;
     res_diff_t  *rd;   /* NULL when there is no level to differentiate */
-    int32_t      degshift;
+    int32_t      degshift;  /* the heft of mdegshift                   */
+    int32_t      mdegshift[RES_MTAB_MAXLEN];
     int32_t      nv;
 };
 
@@ -1574,6 +1844,7 @@ res_comp_t *res_comp_new(
         const uint32_t field_char,
         const int32_t mon_order,
         const res_strat_t * const strat,
+        const res_grading_t * const grading,
         const int32_t nr_vars,
         const int32_t nr_rows,
         const int32_t nr_gens,
@@ -1585,64 +1856,54 @@ res_comp_t *res_comp_new(
         const int32_t info_level
         )
 {
-    int32_t i;
-    md_t *st       = NULL;
-    bs_t *gb       = NULL;
-    ht_t *bht      = NULL;
-    int32_t *rowmd = NULL;
-    res_comp_t *c  = NULL;
+    module_input_t mi;
+    res_comp_t *c = NULL;
+
+    memset(&mi, 0, sizeof(module_input_t));
 
     if (max_level < 0) {
         fprintf(ERRSTREAM, "A negative truncation level makes no sense.\n");
         return NULL;
     }
 
-    /* the same normalization module_gb_from_input applies internally, so
-     * that the handle can report what it was */
-    int32_t mn = 0;
-    if (row_degs != NULL && nr_rows > 0) {
-        mn = row_degs[0];
-        for (i = 1; i < nr_rows; ++i) {
-            if (row_degs[i] < mn) {
-                mn = row_degs[i];
-            }
-        }
-    }
-
     /* reduced, as for the frame: the lead terms have to be the minimal
      * generators of the module of lead terms */
-    gb = module_gb_from_input(&st, lens, exps, comps, cfs, row_degs,
-            field_char, mon_order, strat, nr_vars, nr_rows, nr_gens,
-            ht_size, nr_threads, max_nr_pairs, la_option, 1 /* reduce */,
-            info_level);
-    if (gb == NULL) {
+    if (module_gb_from_input(&mi, lens, exps, comps, cfs, row_degs,
+                field_char, mon_order, strat, grading, nr_vars, nr_rows,
+                nr_gens, ht_size, nr_threads, max_nr_pairs, la_option,
+                1 /* reduce */, info_level)) {
         return NULL;
     }
-    bht = gb->ht;
 
-    if (!module_input_is_graded(st)) {
+    ht_t * const bht = mi.gb->ht;
+
+    if (!module_input_is_graded(&mi)) {
         goto cleanup;
     }
 
     c = (res_comp_t *)calloc(1, sizeof(res_comp_t));
-    rowmd = (int32_t *)calloc((unsigned long)nr_rows, sizeof(int32_t));
-    if (c == NULL || rowmd == NULL) {
+    if (c == NULL) {
         goto cleanup;
     }
-    c->degshift = mn;
     c->nv       = nr_vars;
+    c->degshift = module_row_heft(mi.grp, mi.degshift);
+    memcpy(c->mdegshift, mi.degshift,
+            (unsigned long)mi.grp->len * sizeof(int32_t));
 
-    c->grp = res_dgrp_new_standard(nr_vars);
-    c->f   = c->grp != NULL ? res_frame_new(c->grp, st, max_level) : NULL;
-    if (c->grp == NULL || c->f == NULL) {
+    /* The grading group outlives the Gröbner basis: the frame holds a
+     * pointer to it and every multidegree the handle reports is a view
+     * into a pool it owns, so it moves from mi into the handle here
+     * rather than being freed with the rest of the input. */
+    c->grp   = mi.grp;
+    mi.grp   = NULL;
+
+    c->f = res_frame_new(c->grp, mi.st, max_level);
+    if (c->f == NULL) {
         fprintf(ERRSTREAM, "Could not set up the Schreyer frame.\n");
         goto cleanup;
     }
-    for (i = 0; i < nr_rows; ++i) {
-        rowmd[i] = (int32_t)bht->cshift[i+1];
-    }
 
-    if (res_frame_init(c->f, gb, bht, rowmd)) {
+    if (res_frame_init(c->f, mi.gb, bht, mi.rowmd)) {
         goto cleanup;
     }
     if (res_frame_complete(c->f) < 0 || res_frame_verify(c->f)) {
@@ -1652,31 +1913,26 @@ res_comp_t *res_comp_new(
     /* A frame with only level 0 has nothing to differentiate; that is the
      * zero submodule, and a legitimate answer rather than a failure. */
     if (c->f->nlv >= 2) {
-        c->rd = res_diff_new(c->f, st->fc);
+        c->rd = res_diff_new(c->f, mi.st->fc);
         if (c->rd == NULL) {
             fprintf(ERRSTREAM, "Could not set up the differential.\n");
             goto cleanup;
         }
-        if (res_diff_init(c->rd, gb, bht, st)) {
+        if (res_diff_init(c->rd, mi.gb, bht, mi.st)) {
             goto cleanup;
         }
     }
 
-    c->st = st;
-    st    = NULL;
+    c->st  = mi.st;
+    mi.st  = NULL;
 
-    free(rowmd);
-    free_shared_hash_data(bht);
-    free_basis(&gb);
+    module_input_clear(&mi);
 
     return c;
 
 cleanup:
     res_comp_free(&c);
-    free(rowmd);
-    free_shared_hash_data(bht);
-    free_basis(&gb);
-    free(st);
+    module_input_clear(&mi);
 
     return NULL;
 }
@@ -1739,6 +1995,56 @@ int res_comp_degrees(
     for (k = 0; k < (len_t)rk; ++k) {
         degs[k] = (int32_t)c->f->lv[level].elts[k].hdeg;
     }
+
+    return 0;
+}
+
+int32_t res_comp_glen(
+        const res_comp_t * const c
+        )
+{
+    if (c == NULL || c->grp == NULL) {
+        return 0;
+    }
+
+    return (int32_t)c->grp->len;
+}
+
+int res_comp_multidegrees(
+        const res_comp_t * const c,
+        const int32_t level,
+        int32_t *mdegs
+        )
+{
+    len_t k;
+    const int32_t rk = res_comp_rank(c, level);
+
+    if (rk < 0 || mdegs == NULL) {
+        return 1;
+    }
+
+    const res_level_t * const lv = c->f->lv + level;
+    const len_t glen = c->grp->len;
+
+    for (k = 0; k < (len_t)rk; ++k) {
+        const res_deg_t d = res_dpool_at(lv->degs, lv->elts[k].mdeg);
+        memcpy(mdegs + (int64_t)k * glen, d.e,
+                (unsigned long)glen * sizeof(int32_t));
+    }
+
+    return 0;
+}
+
+int res_comp_multidegshift(
+        const res_comp_t * const c,
+        int32_t *shift
+        )
+{
+    if (c == NULL || c->grp == NULL || shift == NULL) {
+        return 1;
+    }
+    memcpy(shift, c->mdegshift,
+            (unsigned long)c->grp->len * sizeof(int32_t));
 
     return 0;
 }

@@ -174,19 +174,22 @@ static int res_ech_arena_reserve(
     return 0;
 }
 
-/* The rank of the scalar part of d_lev in degree d.  rows lists the frame
- * elements at (lev, d), dpos maps a frame element at level lev-1 to its
- * position inside its own degree class -- which is its column, since every
- * scalar term of a row of degree d lands on a generator of degree d.
- * Returns -1 on failure. */
+/* The rank of the scalar part of d_lev in the degree class the rows share.
+ * rows lists the frame elements at (lev, that class), dpos maps a frame
+ * element at level lev-1 to its position inside its own class -- which is
+ * its column, since every scalar term of a row lands on a generator of the
+ * same degree.  bkt is the class of every level lev-1 element, and u the
+ * class of the rows, so that a term landing outside can be caught rather
+ * than silently written into another column.  Returns -1 on failure. */
 static int64_t res_ech_rank(
         res_ech_t *e,
         const res_diff_t * const rd,
         const len_t lev,
-        const deg_t d,
+        const hl_t u,
         const int32_t * const rows,
         const len_t nrows,
         const int32_t * const dpos,
+        const hl_t * const bkt,
         const len_t ncols
         )
 {
@@ -203,7 +206,6 @@ static int64_t res_ech_rank(
 
     const res_frame_t * const f = rd->f;
     const ht_t * const ht       = f->ht;
-    const res_felt_t * const be = f->lv[lev-1].elts;
     const uint64_t fc           = (uint64_t)rd->fc;
     int64_t rank                = 0;
 
@@ -218,11 +220,11 @@ static int64_t res_ech_rank(
                 continue;
             }
             const int32_t q = p->pos[t];
-            if (be[q].hdeg != d) {
+            if (bkt[q] != u) {
                 fprintf(ERRSTREAM, "A constant term of frame element "
-                        "(%u,%d) sits in degree %d, not %d; the input is "
-                        "not homogeneous.\n", (unsigned)lev, rows[r],
-                        be[q].hdeg, d);
+                        "(%u,%d) sits in a different degree class than the "
+                        "element itself; the input is not homogeneous.\n",
+                        (unsigned)lev, rows[r]);
                 return -1;
             }
             j        = dpos[q];
@@ -292,13 +294,86 @@ static int64_t res_ech_rank(
  *  The Betti table
  * --------------------------------------------------------------------- */
 
+/* Collects the multidegrees occurring anywhere in the frame, sorts them
+ * into the group's own order, and records for every frame element which
+ * bucket it lands in.  bkt[lev] has one entry per element of that level.
+ * Returns 0 on success. */
+static int res_betti_bucket(
+        res_betti_t *b,
+        hl_t **bkt
+        )
+{
+    len_t lev, k;
+    hl_t u;
+    int ret = 1;
+
+    const res_frame_t * const f = b->f;
+    const res_dgrp_t * const g  = b->grp;
+
+    res_dbkt_t *db = res_dbkt_new(g, 64);
+    hl_t *perm     = NULL;
+
+    if (db == NULL) {
+        return 1;
+    }
+
+    for (lev = 0; lev < b->nlv; ++lev) {
+        const res_level_t * const lv = f->lv + lev;
+        for (k = 0; k < lv->ld; ++k) {
+            const hl_t w = res_dbkt_insert(db,
+                    res_dpool_at(lv->degs, lv->elts[k].mdeg));
+            if (w == (hl_t)-1) {
+                goto cleanup;
+            }
+            bkt[lev][k] = w;
+        }
+    }
+
+    b->ndeg = db->ld;
+
+    perm = (hl_t *)malloc(
+            (unsigned long)(b->ndeg > 0 ? b->ndeg : 1) * sizeof(hl_t));
+    if (perm == NULL || res_dbkt_sort(db, perm)) {
+        goto cleanup;
+    }
+    for (lev = 0; lev < b->nlv; ++lev) {
+        for (k = 0; k < f->lv[lev].ld; ++k) {
+            bkt[lev][k] = perm[bkt[lev][k]];
+        }
+    }
+
+    if (b->ndeg > 0) {
+        b->mdegs = (int32_t *)calloc(
+                (size_t)b->ndeg * (size_t)g->len, sizeof(int32_t));
+        b->mheft = (deg_t *)calloc((size_t)b->ndeg, sizeof(deg_t));
+        if (b->mdegs == NULL || b->mheft == NULL) {
+            goto cleanup;
+        }
+        for (u = 0; u < b->ndeg; ++u) {
+            const res_deg_t d = res_dbkt_at(db, u);
+            memcpy(b->mdegs + (size_t)u * g->len, d.e,
+                    (unsigned long)g->len * sizeof(int32_t));
+            b->mheft[u] = g->heft_of(g, d);
+        }
+    }
+
+    ret = 0;
+
+cleanup:
+    free(perm);
+    res_dbkt_free(&db);
+
+    return ret;
+}
+
 res_betti_t *res_betti_new(
         const res_frame_t * const f
         )
 {
-    len_t i;
+    len_t i, lev, k;
+    hl_t u;
 
-    if (f == NULL || f->bad) {
+    if (f == NULL || f->bad || f->grp == NULL) {
         return NULL;
     }
 
@@ -307,6 +382,7 @@ res_betti_t *res_betti_new(
         return NULL;
     }
     b->f      = f;
+    b->grp    = f->grp;
     b->nlv    = f->nlv;
     b->maxdeg = res_frame_max_hdeg(f);
     if (b->maxdeg < 0) {
@@ -347,13 +423,73 @@ res_betti_t *res_betti_new(
         }
     }
 
+    /* --- the same three tables, indexed by multidegree ---------------- */
+
+    hl_t **bkt = (hl_t **)calloc((unsigned long)b->nlv, sizeof(hl_t *));
+    if (bkt == NULL) {
+        res_betti_free(&b);
+        return NULL;
+    }
+    for (lev = 0; lev < b->nlv; ++lev) {
+        bkt[lev] = (hl_t *)calloc(
+                (unsigned long)(f->lv[lev].ld > 0 ? f->lv[lev].ld : 1),
+                sizeof(hl_t));
+        if (bkt[lev] == NULL) {
+            goto bad;
+        }
+    }
+    if (res_betti_bucket(b, bkt)) {
+        goto bad;
+    }
+
+    const size_t mtab = (size_t)b->nlv * (size_t)b->ndeg;
+
+    b->mframe = (int32_t *)calloc(mtab > 0 ? mtab : 1, sizeof(int32_t));
+    b->mrank  = (int32_t *)calloc(mtab > 0 ? mtab : 1, sizeof(int32_t));
+    b->mbetti = (int32_t *)calloc(mtab > 0 ? mtab : 1, sizeof(int32_t));
+    b->mhilb  = (int32_t *)calloc(
+            (size_t)(b->ndeg > 0 ? b->ndeg : 1), sizeof(int32_t));
+    if (b->mframe == NULL || b->mrank == NULL
+            || b->mbetti == NULL || b->mhilb == NULL) {
+        goto bad;
+    }
+
+    for (lev = 0; lev < b->nlv; ++lev) {
+        for (k = 0; k < f->lv[lev].ld; ++k) {
+            b->mframe[(size_t)lev * b->ndeg + bkt[lev][k]]++;
+        }
+    }
+    memcpy(b->mbetti, b->mframe, mtab * sizeof(int32_t));
+    for (i = 0; i < b->nlv; ++i) {
+        for (u = 0; u < b->ndeg; ++u) {
+            const int32_t c = b->mframe[(size_t)i * b->ndeg + u];
+            b->mhilb[u] = (i & 1) ? b->mhilb[u] - c : b->mhilb[u] + c;
+        }
+    }
+
+    /* the buckets are what res_betti_minimalize eliminates block by block,
+     * so they are kept rather than rebuilt */
+    b->bkt = bkt;
+
     return b;
+
+bad:
+    if (bkt != NULL) {
+        for (lev = 0; lev < b->nlv; ++lev) {
+            free(bkt[lev]);
+        }
+        free(bkt);
+    }
+    res_betti_free(&b);
+
+    return NULL;
 }
 
 void res_betti_free(
         res_betti_t **bp
         )
 {
+    len_t i;
     res_betti_t *b = *bp;
 
     if (b == NULL) {
@@ -363,6 +499,18 @@ void res_betti_free(
     free(b->rank);
     free(b->betti);
     free(b->hilb);
+    free(b->mdegs);
+    free(b->mheft);
+    free(b->mframe);
+    free(b->mrank);
+    free(b->mbetti);
+    free(b->mhilb);
+    if (b->bkt != NULL) {
+        for (i = 0; i < b->nlv; ++i) {
+            free(b->bkt[i]);
+        }
+        free(b->bkt);
+    }
     free(b);
     *bp = NULL;
 }
@@ -389,81 +537,102 @@ int res_betti_minimalize(
     const len_t nlv             = b->nlv;
     const deg_t maxd            = b->maxdeg;
     const size_t nd             = (size_t)maxd + 1;
+    const size_t ndg            = (size_t)b->ndeg;
 
-    /* Per level: the elements listed by degree, the offsets of each degree
+    /* Per level: the elements listed by bucket, the offsets of each bucket
      * inside that list, and the position of each element inside its own
-     * degree class.  One counting sort per level serves every block. */
-    int32_t **bkt = (int32_t **)calloc((unsigned long)nlv, sizeof(int32_t *));
+     * bucket.  One counting sort per level serves every block.
+     *
+     * Blocking by *multidegree* rather than by heft degree is a strict
+     * improvement, not a compromise.  The differential is multihomogeneous,
+     * so its scalar part is block diagonal with respect to multidegree: the
+     * finer blocks are exactly the diagonal blocks of the coarser ones,
+     * their ranks add up to the same heft indexed answer, and eliminating
+     * them separately is cheaper.  Under the standard grading the two
+     * blockings are the same and nothing changes. */
+    int32_t **ord = (int32_t **)calloc((unsigned long)nlv, sizeof(int32_t *));
     int32_t **bof = (int32_t **)calloc((unsigned long)nlv, sizeof(int32_t *));
     int32_t **dps = (int32_t **)calloc((unsigned long)nlv, sizeof(int32_t *));
     res_ech_t ech;
+    hl_t u;
 
     memset(&ech, 0, sizeof(res_ech_t));
 
-    if (bkt == NULL || bof == NULL || dps == NULL) {
+    if (ord == NULL || bof == NULL || dps == NULL || b->bkt == NULL) {
         goto cleanup;
     }
     for (lev = 0; lev < nlv; ++lev) {
         const res_level_t * const lv = f->lv + lev;
+        const hl_t * const bk        = b->bkt[lev];
 
-        bkt[lev] = (int32_t *)malloc(
+        ord[lev] = (int32_t *)malloc(
                 (unsigned long)(lv->ld > 0 ? lv->ld : 1) * sizeof(int32_t));
         dps[lev] = (int32_t *)malloc(
                 (unsigned long)(lv->ld > 0 ? lv->ld : 1) * sizeof(int32_t));
-        bof[lev] = (int32_t *)calloc((unsigned long)maxd + 2, sizeof(int32_t));
-        if (bkt[lev] == NULL || bof[lev] == NULL || dps[lev] == NULL) {
+        bof[lev] = (int32_t *)calloc(ndg + 2, sizeof(int32_t));
+        if (ord[lev] == NULL || bof[lev] == NULL || dps[lev] == NULL) {
             goto cleanup;
         }
         for (k = 0; k < lv->ld; ++k) {
-            const deg_t dd = lv->elts[k].hdeg;
-            if (dd < 0 || dd > maxd) {
-                fprintf(ERRSTREAM, "Frame element (%u,%u) has degree %d, "
-                        "outside the frame's own range.\n",
-                        (unsigned)lev, (unsigned)k, dd);
-                goto cleanup;
-            }
-            bof[lev][dd + 1]++;
+            bof[lev][bk[k] + 1]++;
         }
-        for (d = 0; d <= maxd; ++d) {
-            bof[lev][d+1] += bof[lev][d];
+        for (u = 0; u < (hl_t)ndg; ++u) {
+            bof[lev][u+1] += bof[lev][u];
         }
         {
-            int32_t *ctr = (int32_t *)calloc(
-                    (unsigned long)maxd + 2, sizeof(int32_t));
+            int32_t *ctr = (int32_t *)calloc(ndg + 2, sizeof(int32_t));
             if (ctr == NULL) {
                 goto cleanup;
             }
             for (k = 0; k < lv->ld; ++k) {
-                const deg_t dd = lv->elts[k].hdeg;
-                bkt[lev][bof[lev][dd] + ctr[dd]] = (int32_t)k;
-                dps[lev][k] = ctr[dd];
-                ctr[dd]++;
+                const hl_t w = bk[k];
+                ord[lev][bof[lev][w] + ctr[w]] = (int32_t)k;
+                dps[lev][k] = ctr[w];
+                ctr[w]++;
             }
             free(ctr);
         }
     }
 
-    /* The blocks are mutually independent: (lev, d) reads d_lev and
+    /* The blocks are mutually independent: (lev, u) reads d_lev and
      * nothing else.  This is the loop a device backend replaces. */
     for (lev = 1; lev < nlv; ++lev) {
-        for (d = 0; d <= maxd; ++d) {
-            const int32_t rb = bof[lev][d];
-            const int32_t nr = bof[lev][d+1] - rb;
-            const int32_t nc = bof[lev-1][d+1] - bof[lev-1][d];
+        for (u = 0; u < (hl_t)ndg; ++u) {
+            const int32_t rb = bof[lev][u];
+            const int32_t nr = bof[lev][u+1] - rb;
+            const int32_t nc = bof[lev-1][u+1] - bof[lev-1][u];
             if (nr <= 0 || nc <= 0) {
                 continue;
             }
-            const int64_t rk = res_ech_rank(&ech, rd, lev, d,
-                    bkt[lev] + rb, (len_t)nr, dps[lev-1], (len_t)nc);
+            const int64_t rk = res_ech_rank(&ech, rd, lev, u,
+                    ord[lev] + rb, (len_t)nr, dps[lev-1], b->bkt[lev-1],
+                    (len_t)nc);
             if (rk < 0) {
                 goto cleanup;
             }
-            b->rank[(size_t)lev * nd + d] = (int32_t)rk;
+            b->mrank[(size_t)lev * ndg + u] = (int32_t)rk;
+            b->rank[(size_t)lev * nd + b->mheft[u]] += (int32_t)rk;
         }
     }
 
-    /* beta_{i,d} = frame_{i,d} - rank(d_i)_d - rank(d_{i+1})_d */
+    /* beta_{i,a} = frame_{i,a} - rank(d_i)_a - rank(d_{i+1})_a, in both
+     * indexings; the heft one is the sum of the multigraded one over each
+     * fibre, which is why the two agree entry for entry. */
     for (i = 0; i < nlv; ++i) {
+        for (u = 0; u < (hl_t)ndg; ++u) {
+            const int32_t up = (i + 1 < nlv)
+                ? b->mrank[(size_t)(i+1)*ndg + u] : 0;
+            const int32_t v  = b->mframe[(size_t)i*ndg + u]
+                - b->mrank[(size_t)i*ndg + u] - up;
+            if (v < 0) {
+                fprintf(ERRSTREAM, "A minimal Betti number is negative at "
+                        "level %u in multidegree bucket %u; the rank "
+                        "corrections do not fit inside the frame.\n",
+                        (unsigned)i, (unsigned)u);
+                goto cleanup;
+            }
+            b->mbetti[(size_t)i*ndg + u] = v;
+        }
         for (d = 0; d <= maxd; ++d) {
             const int32_t up = (i + 1 < nlv) ? b->rank[(size_t)(i+1)*nd + d] : 0;
             const int32_t v  = b->frame[(size_t)i*nd + d]
@@ -482,11 +651,11 @@ int res_betti_minimalize(
     ret        = 0;
 
 cleanup:
-    if (bkt != NULL) {
+    if (ord != NULL) {
         for (i = 0; i < nlv; ++i) {
-            free(bkt[i]);
+            free(ord[i]);
         }
-        free(bkt);
+        free(ord);
     }
     if (bof != NULL) {
         for (i = 0; i < nlv; ++i) {

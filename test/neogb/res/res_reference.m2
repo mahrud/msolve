@@ -254,3 +254,73 @@ reportResolution("the twisted cubic",
 -- are the same ones the untruncated computation reports
 Ctr = msolveResolution(ideal(z, y^2, x^2*y, x^3), LengthLimit => 2);
 print("-- truncated at level 2: ranks " | toString apply(1 + length Ctr, i -> numgens Ctr_i));
+
+-- ---------------------------------------------------------------------
+-- Gradings by a finitely generated abelian group (M6).
+--
+-- Every number below is hard coded in res_selftest.c's res_test_weighted_*
+-- and res_test_multigraded_* .  Two things are worth reading off:
+--
+--  * the *heft* table, which is what a caller that does not care about the
+--    finer grading sees, and which stays what it always was -- a heft class
+--    is a disjoint union of multidegree classes;
+--  * the *multigraded* table, which is the novel output.  Macaulay2 will
+--    print it with `multigraded betti`, but it has no minimalBetti here, so
+--    on a large example msolve is doing something Macaulay2 cannot.
+--
+-- The discriminating case is the P^1 x P^1 one: level 2 carries two
+-- generators of the same heft degree 3 in different multidegrees, (1,2)
+-- and (2,1), so the heft table reports a single 2 where the multigraded
+-- table reports two 1s.  Rank extraction that blocked by heft degree could
+-- not produce the second table at all.
+--
+-- dim and degree need no multigraded generalization: they are read off the
+-- heft numerator, and because dividing by (1 - t^w) contributes exactly one
+-- zero at t = 1 per variable whatever the weight w, the same "write
+-- K = (1-t)^c G, then dim = nv - c and degree = G(1)" recovers what
+-- Macaulay2 reports for weighted and multigraded rings alike.  That is why
+-- res_hilbert_invariants did not have to change for this milestone.
+-- ---------------------------------------------------------------------
+
+reportGraded = (name, M) -> (
+    C := res M;
+    print("-- " | name);
+    print("   betti        : " | toString betti C);
+    print("   multigraded  : " | toString (multigraded betti C));
+    print("   poincare     : " | toString poincare M);
+    print("   pdim/reg     : " | toString pdim M | " " | toString regularity M);
+    print("   dim/degree   : " | toString dim M | " " | toString degree M);
+    );
+
+-- weighted: deg x = 1, deg y = 2, deg z = 3
+Rw = ZZ/p[x,y,z, Degrees => {1,2,3}];
+reportGraded("weighted (1,2,3), I = (x^2 y, y z, x z)",
+    Rw^1/ideal(x^2*y, y*z, x*z));
+
+-- the same ring, but an ideal whose *order* depends on the weights: these
+-- two are weighted homogeneous of degrees 8 and 6 and are not homogeneous
+-- at all for the standard grading, so the weights decide which term leads
+Iw = ideal(y^4 - x^5*z, z^2 - x^2*y^2);
+print("-- weighted-homogeneous? " | toString isHomogeneous Iw
+    | ", standard-homogeneous? false");
+print("   gb lead terms: " | toString leadTerm gens gb Iw);
+reportGraded("weighted (1,2,3), I = (y^4 - x^5 z, z^2 - x^2 y^2)", Rw^1/Iw);
+
+-- multigraded: P^1 x P^1
+Tm = ZZ/p[a,b,c,d, Degrees => {{1,0},{1,0},{0,1},{0,1}}];
+reportGraded("P^1 x P^1, J = (ac, bd, ad)", Tm^1/ideal(a*c, b*d, a*d));
+reportGraded("P^1 x P^1, N = coker [ac  bd]", coker matrix{{a*c, b*d}});
+
+-- Torsion has no Macaulay2 counterpart: its degree monoid is ZZ^r with no
+-- torsion, so the reference for res_test_torsion_betti is by hand.  With
+-- R = k[x,y] graded by ZZ (+) ZZ/2, deg x = (1,0) and deg y = (1,1), the
+-- heft ignores the torsion and I = (x^2, xy) has both generators in heft
+-- degree 2 -- but in multidegrees (2,0) and (2,1).  The syzygy
+-- y*x^2 - x*(xy) sits in (3,1).  The heft table below is what Macaulay2
+-- does see, over the ungraded ring, and the multigraded refinement of it
+-- is what msolve adds.
+use Q;
+print("-- torsion reference: ZZ (+) ZZ/2 on k[x,y], I = (x^2, xy)");
+print("   heft table (Macaulay2, standard grading): "
+    | toString betti res (Q^1/ideal(x^2, x*y)));
+print("   multigraded (by hand): level 1 in (2,0) and (2,1), level 2 in (3,1)");

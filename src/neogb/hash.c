@@ -106,6 +106,9 @@ ht_t *initialize_basis_hash_table(
     }
     /* append the component slot at the end of the exponent vector; ht->dv
      * only ever addresses variable slots, so divisor masks are unaffected */
+    /* filled in by the caller when the grading is not the standard one;
+     * NULL is what every reader takes as "every variable has weight one" */
+    ht->vwt = NULL;
     if (ht->ncomp > 0) {
         ht->cpos    = ht->evl;
         ht->evl     = ht->evl + 1;
@@ -176,6 +179,7 @@ ht_t *copy_hash_table(
     ht->mpos    = bht->mpos;
     ht->cbase   = bht->cbase;
     ht->cshift  = bht->cshift;
+    ht->vwt     = bht->vwt;
 
     ht->hmap  = calloc(ht->hsz, sizeof(hi_t));
     memcpy(ht->hmap, bht->hmap, (unsigned long)ht->hsz * sizeof(hi_t));
@@ -233,6 +237,7 @@ ht_t *initialize_secondary_hash_table(
     ht->mpos    = bht->mpos;
     ht->cbase   = bht->cbase;
     ht->cshift  = bht->cshift;
+    ht->vwt     = bht->vwt;
 
     /* generate map */
     int32_t min = 3 > md->init_hts-5 ? 3 : md->init_hts-5;
@@ -295,6 +300,10 @@ void free_shared_hash_data(
         if (ht->cshift) {
             free(ht->cshift);
             ht->cshift = NULL;
+        }
+        if (ht->vwt) {
+            free(ht->vwt);
+            ht->vwt = NULL;
         }
     }
 }
@@ -364,6 +373,10 @@ void full_free_hash_table(
     if (ht->cshift) {
       free(ht->cshift);
       ht->cshift = NULL;
+    }
+    if (ht->vwt) {
+      free(ht->vwt);
+      ht->vwt = NULL;
     }
   }
   free(ht);
@@ -1407,11 +1420,21 @@ static inline hi_t get_lcm(
             etmp[i] = ea[i] < eb[i] ? eb[i] : ea[i];
         }
         etmp[cpos] = comp;
-        /* the degree must skip the component slot and pick up the
-         * component's degree shift, see data.h */
+        /* The degree must skip the component slot and pick up the
+         * component's degree shift, see data.h.  This is the one place in
+         * the engine that rebuilds a degree from exponents rather than
+         * adding two degrees that were already right, so it is also the
+         * one place a non-unit weight has to be applied by hand. */
         etmp[DEG] = (exp_t)ht1->cshift[comp];
-        for (i = 1; i < cpos; ++i) {
-            etmp[DEG] = (exp_t)(etmp[DEG] + etmp[i]);
+        if (ht1->vwt == NULL) {
+            for (i = 1; i < cpos; ++i) {
+                etmp[DEG] = (exp_t)(etmp[DEG] + etmp[i]);
+            }
+        } else {
+            const deg_t * const vwt = ht1->vwt;
+            for (i = 1; i < cpos; ++i) {
+                etmp[DEG] = (exp_t)(etmp[DEG] + vwt[i] * etmp[i]);
+            }
         }
 #if PARALLEL_HASHING
         return check_insert_in_hash_table(etmp, 0, ht2);

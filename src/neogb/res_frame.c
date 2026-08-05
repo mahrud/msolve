@@ -47,10 +47,43 @@ static inline void res_frame_ht_reserve(
     }
 }
 
-/* e <- a / gcd(a,b), inserted into the table.  Degrees are the plain
- * total degree, matching the module table the Gröbner basis was computed
- * in; the graded degrees of a frame element are kept separately in hdeg
- * and mdeg. */
+/* The degree slot of the frame's own ring table.  This has to be the
+ * *heft* degree, the very thing ev[DEG] carries in the module table the
+ * Gröbner basis was computed in, because the Schreyer order the
+ * differential reduces under is derived from that table's order: if the
+ * frame compared plain total degrees while the basis was a Gröbner basis
+ * for the weighted order, the reducer selection in res_diff.c would be
+ * choosing under an order the basis does not satisfy.  Under the standard
+ * grading ht->vwt is NULL, the weights are all one, and this is the plain
+ * total degree it always was.
+ *
+ * The graded degrees of a frame element -- the full multidegree and its
+ * heft, component shifts included -- are separate, in hdeg and mdeg. */
+static inline deg_t res_frame_hdeg(
+        const ht_t * const ht,
+        const exp_t * const e
+        )
+{
+    len_t i;
+    deg_t d = 0;
+
+    const len_t nv          = ht->nv;
+    const deg_t * const vwt = ht->vwt;
+
+    if (vwt == NULL) {
+        for (i = 1; i <= nv; ++i) {
+            d = d + (deg_t)e[i];
+        }
+    } else {
+        for (i = 1; i <= nv; ++i) {
+            d = d + vwt[i] * (deg_t)e[i];
+        }
+    }
+
+    return d;
+}
+
+/* e <- a / gcd(a,b), inserted into the table. */
 static inline hi_t res_frame_colon(
         ht_t *ht,
         exp_t *e,
@@ -59,7 +92,6 @@ static inline hi_t res_frame_colon(
         )
 {
     len_t i;
-    deg_t d = 0;
 
     const len_t evl       = ht->evl;
     const exp_t * const ea = ht->ev[a];
@@ -67,9 +99,8 @@ static inline hi_t res_frame_colon(
 
     for (i = 1; i < evl; ++i) {
         e[i] = ea[i] > eb[i] ? (exp_t)(ea[i] - eb[i]) : 0;
-        d    = d + (deg_t)e[i];
     }
-    e[0] = (exp_t)d;
+    e[0] = (exp_t)res_frame_hdeg(ht, e);
 
     return insert_in_hash_table(e, ht);
 }
@@ -385,6 +416,25 @@ res_frame_t *res_frame_new(
         return NULL;
     }
 
+    /* The weights come along too, for the reason res_frame_hdeg gives.
+     * They are left NULL when every variable has weight one, so the
+     * standard grading takes exactly the path it always did. */
+    for (i = 0; i < f->nv; ++i) {
+        if (grp->vhdeg[i] != 1) {
+            f->ht->vwt = (deg_t *)calloc(
+                    (unsigned long)f->ht->evl, sizeof(deg_t));
+            if (f->ht->vwt == NULL) {
+                full_free_hash_table(&f->ht);
+                free(f);
+                return NULL;
+            }
+            for (i = 0; i < f->nv; ++i) {
+                f->ht->vwt[i+1] = grp->vhdeg[i];
+            }
+            break;
+        }
+    }
+
     f->lvsz = f->maxlv > 0 ? f->maxlv + 1 : 8;
     f->lv   = (res_level_t *)calloc(
             (unsigned long)f->lvsz, sizeof(res_level_t));
@@ -532,12 +582,10 @@ int res_frame_init(
             continue; /* the zero element, carrying no lead term */
         }
         const exp_t * const be = bht->ev[hm[OFFSET]];
-        deg_t d = 0;
         for (j = 1; j <= nv; ++j) {
             e[j] = be[j];
-            d    = d + (deg_t)be[j];
         }
-        e[0] = (exp_t)d;
+        e[0] = (exp_t)res_frame_hdeg(ht, e);
         gen[ngen].mono = insert_in_hash_table(e, ht);
         gen[ngen].comp = (int32_t)be[bht->cpos];
         gen[ngen].src  = (int32_t)gb->lmps[i];

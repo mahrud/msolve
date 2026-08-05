@@ -199,6 +199,52 @@ void res_dgrp_free(
         res_dgrp_t **gp
         );
 
+/* --- how a caller describes a grading ------------------------------- *
+ *
+ *  res_dgrp_t is the engine's internal object, owning storage and a
+ *  vtable.  This is the flat description a caller hands in: no
+ *  allocation, no ownership, valid only for the duration of the call.
+ *  Every C entry point takes one, and NULL means the standard grading --
+ *  A = Z with every variable in degree 1 -- which is what the engine did
+ *  before gradings were a parameter.
+ *
+ *  Everything a grading needs is here, so extending it is adding a field:
+ *  a name for an external group backend, a presentation of a non-abelian
+ *  group, a cached heft.  The entry points take a pointer for that reason,
+ *  exactly as they do for res_strat_t.
+ * --------------------------------------------------------------------- */
+
+typedef struct res_grading_t res_grading_t;
+struct res_grading_t
+{
+    int32_t r;           /* rank of the free part of A                   */
+    int32_t nt;          /* number of torsion factors                    */
+    const int32_t *tord; /* nt orders, each >= 2; NULL iff nt == 0       */
+    const int32_t *degs; /* (r+nt) x nv, column major: entries
+                          * [j*(r+nt), (j+1)*(r+nt)) are deg(x_j), free
+                          * part first then torsion residues             */
+    const int32_t *heft; /* r entries with heft . deg(x_j) > 0 for every
+                          * j; NULL means the all ones vector            */
+};
+
+/* The number of int32 slots one degree of this grading occupies, which is
+ * how many entries per row the row_degs argument of every entry point
+ * carries and how many per generator res_comp_multidegrees writes.  A NULL
+ * grading is the standard one and reports 1. */
+int32_t res_grading_len(
+        const res_grading_t * const g
+        );
+
+/* Builds the engine's degree group from the caller's description.
+ * grading == NULL asks for res_dgrp_new_standard(nv).  Returns NULL and
+ * reports on stderr if the description is inconsistent -- a torsion order
+ * below two, or a heft that is not strictly positive on some variable,
+ * which is what would make the degree by degree schedule non-terminating. */
+res_dgrp_t *res_dgrp_of_grading(
+        const res_grading_t * const grading,
+        const len_t nv
+        );
+
 res_dpool_t *res_dpool_new(
         const res_dgrp_t *grp,
         const hl_t sz
@@ -221,6 +267,73 @@ res_deg_t res_dpool_at(
 res_deg_t res_dpool_push(
         res_dpool_t *p,
         hl_t *idx
+        );
+
+/* --- multidegree buckets --------------------------------------------- *
+ *
+ *  Everything graded that this engine reports -- frame ranks, minimal
+ *  Betti numbers, the Hilbert numerator -- is a table indexed by degree.
+ *  Under the standard grading a degree is a small nonnegative integer and
+ *  the table is a dense array; under a grading by Z^r (+) torsion it is
+ *  not, and the degrees that actually occur are a sparse, unpredictable
+ *  subset of a lattice that may well be negative in places.
+ *
+ *  So the general table is indexed by *bucket*: an index into the set of
+ *  distinct degrees that occur, discovered as the frame is walked.  This
+ *  is a hash set over the group's own hash and comparison, which is why
+ *  those are in the vtable -- an external group backend gets bucketing for
+ *  free by supplying them.
+ *
+ *  res_dbkt_sort puts the buckets in the group's own order once, after
+ *  which bucket indices are stable and every table built on them can be
+ *  reported directly.  Bucket 0 is not special.
+ * --------------------------------------------------------------------- */
+
+typedef struct res_dbkt_t res_dbkt_t;
+struct res_dbkt_t
+{
+    const res_dgrp_t *grp;
+    res_dpool_t      *pool; /* the distinct degrees, in insertion order  */
+    hl_t             *map;  /* open addressed, entries are 1 + bucket    */
+    hl_t              msz;  /* a power of two                            */
+    hl_t              ld;   /* number of distinct degrees                */
+};
+
+res_dbkt_t *res_dbkt_new(
+        const res_dgrp_t *grp,
+        const hl_t sz
+        );
+
+void res_dbkt_free(
+        res_dbkt_t **bp
+        );
+
+/* The bucket of a, or -1 when a has not been inserted. */
+hl_t res_dbkt_find(
+        const res_dbkt_t * const b,
+        const res_deg_t a
+        );
+
+/* The bucket of a, inserting it if it is new; -1 on allocation failure. */
+hl_t res_dbkt_insert(
+        res_dbkt_t *b,
+        const res_deg_t a
+        );
+
+/* A view of the degree in bucket i.  Invalidated by a later insert, so
+ * hold buckets rather than views. */
+res_deg_t res_dbkt_at(
+        const res_dbkt_t * const b,
+        const hl_t i
+        );
+
+/* Reorders the buckets into the group's own order, writing the new bucket
+ * of every old bucket into perm, which must have b->ld entries and which
+ * the caller uses to relabel any table it has already built.  Returns 0 on
+ * success.  No further insert may follow a sort. */
+int res_dbkt_sort(
+        res_dbkt_t *b,
+        hl_t *perm
         );
 
 /* --- arithmetic ------------------------------------------------------ */
@@ -583,12 +696,32 @@ int res_diff_verify(
  *  a truncated one is missing the tail of the alternating sum.
  * --------------------------------------------------------------------- */
 
+/*  Under a grading by Z^r (+) torsion every table here exists twice.
+ *
+ *  The *heft* tables -- frame, rank, betti, hilb -- are indexed by the
+ *  single integer heft . a that schedules the computation, and are what a
+ *  caller that does not care about the finer grading reads.  They remain
+ *  correct under any grading: a heft class is a disjoint union of
+ *  multidegree classes, the differential is multihomogeneous so its scalar
+ *  part is block diagonal with respect to them, and ranks therefore add.
+ *
+ *  The *multigraded* tables -- mframe, mrank, mbetti, mhilb -- are indexed
+ *  by bucket, mdegs listing the distinct multidegrees in the group's own
+ *  order.  Under the standard grading the two indexings coincide and the
+ *  multigraded tables are a permutation of the heft ones.
+ *
+ *  Rank extraction always runs on the *finer* blocks and sums up, which is
+ *  not a compromise but a strict improvement: the blocks are smaller, so
+ *  the elimination is cheaper, and the multigraded answer -- which
+ *  Macaulay2 has no minimalBetti for -- comes out at no extra cost. */
+
 typedef struct res_betti_t res_betti_t;
 struct res_betti_t
 {
     const res_frame_t *f;  /* not owned                                  */
+    const res_dgrp_t *grp; /* not owned; f->grp                          */
     len_t    nlv;          /* levels, so 0 <= i < nlv                    */
-    deg_t    maxdeg;       /* largest degree, so 0 <= d <= maxdeg        */
+    deg_t    maxdeg;       /* largest heft degree, so 0 <= d <= maxdeg   */
     int32_t *frame;        /* nlv*(maxdeg+1), the nonminimal ranks       */
     int32_t *rank;         /* nlv*(maxdeg+1), rank of the scalar part of
                             * d_i in degree d; row 0 is zero, there
@@ -597,6 +730,18 @@ struct res_betti_t
                             * a copy of frame until res_betti_minimalize
                             * has run                                    */
     int32_t *hilb;         /* maxdeg+1 Hilbert numerator coefficients    */
+
+    hl_t     ndeg;         /* distinct multidegrees, so 0 <= u < ndeg    */
+    int32_t *mdegs;        /* ndeg*grp->len, in the group's own order    */
+    deg_t   *mheft;        /* ndeg, the heft degree of each bucket       */
+    int32_t *mframe;       /* nlv*ndeg                                   */
+    int32_t *mrank;        /* nlv*ndeg                                   */
+    int32_t *mbetti;       /* nlv*ndeg                                   */
+    int32_t *mhilb;        /* ndeg                                       */
+    hl_t   **bkt;          /* bkt[i][k] is the bucket of frame element
+                            * (i,k); this is the blocking rank extraction
+                            * runs on, kept rather than rebuilt          */
+
     int      minimal;      /* 1 once res_betti_minimalize has run        */
     int      bad;
 };
@@ -661,16 +806,27 @@ int res_hilbert_invariants(
  *
  *  and, describing the ambient free module,
  *
- *    row_degs  nr_rows entries, the degree of each generator of R^nr_rows,
- *              i.e. R^nr_rows = (+)_i R(-row_degs[i]); may be NULL, which
- *              is read as all zero.  Only differences matter, so the
- *              values are normalized to start at zero internally.
+ *    row_degs  the degree of each generator of R^nr_rows, i.e.
+ *              R^nr_rows = (+)_i R(-row_degs[i]); res_grading_len(grading)
+ *              entries per row, concatenated row by row, so nr_rows
+ *              entries under the standard grading.  May be NULL, which is
+ *              read as all zero.  Only differences matter, so the degrees
+ *              are normalized internally by subtracting the degree of the
+ *              row of least heft; export_module_betti reports that shift.
  *
  *  The output uses the same layout, with bcomp giving the component of
  *  each term of the basis.  All four output arrays are allocated with the
  *  caller supplied mallocp and are released by
  *  free_module_f4_result_data.  The return value is the total number of
  *  terms, or 0 on failure, in which case nothing is allocated.
+ *
+ *  Under a grading other than the standard one the ring order is the
+ *  *heft* degree reverse lexicographic order: monomials are compared by
+ *  heft . deg first and ties broken reverse lexicographically.  That is a
+ *  term order precisely because res_dgrp_of_grading insists the heft be
+ *  strictly positive on every variable, which is also what makes the
+ *  degree by degree schedules terminate.  With the standard grading the
+ *  heft degree is the total degree and this is msolve's usual DRL.
  *
  *  Restrictions, all reported on stderr rather than assumed:
  *    - prime field of characteristic 0 < p < 2^31,
@@ -698,7 +854,8 @@ int64_t export_module_f4(
         const int32_t *row_degs, /* may be NULL */
         const uint32_t field_char,
         const int32_t mon_order,
-        const res_strat_t *strat,   /* NULL means the default */
+        const res_strat_t *strat,     /* NULL means the default  */
+        const res_grading_t *grading, /* NULL means the standard */
         const int32_t nr_vars,
         const int32_t nr_rows,
         const int32_t nr_gens,
@@ -755,7 +912,8 @@ int64_t export_module_frame(
         const int32_t *row_degs, /* may be NULL */
         const uint32_t field_char,
         const int32_t mon_order,
-        const res_strat_t *strat,   /* NULL means the default */
+        const res_strat_t *strat,     /* NULL means the default  */
+        const res_grading_t *grading, /* NULL means the standard */
         const int32_t nr_vars,
         const int32_t nr_rows,
         const int32_t nr_gens,
@@ -858,7 +1016,8 @@ int64_t export_module_resolution(
         const int32_t *row_degs, /* may be NULL */
         const uint32_t field_char,
         const int32_t mon_order,
-        const res_strat_t *strat,   /* NULL means the default */
+        const res_strat_t *strat,     /* NULL means the default  */
+        const res_grading_t *grading, /* NULL means the standard */
         const int32_t nr_vars,
         const int32_t nr_rows,
         const int32_t nr_gens,
@@ -919,6 +1078,16 @@ void free_module_resolution_result_data(
  *  do not depend on it at all.  The zero module reports dimension -1,
  *  degree 0 and pdim = reg = -1.
  *
+ *  All of that is in terms of the single *heft* degree, and it stays
+ *  correct under any grading -- a heft class is a disjoint union of
+ *  multidegree classes.  The finer table lives in mtab, below, which is
+ *  computed only when one is supplied.  dimension and degree in particular
+ *  need no generalization: they are read off the heft numerator, and
+ *  because dividing by (1 - t^w) contributes exactly one zero at t = 1 per
+ *  variable whatever the weight w, the same "write K = (1-t)^c G, then
+ *  dim = nv - c and degree = G(1)" recovers what Macaulay2 reports for
+ *  weighted and multigraded rings alike.
+ *
  *  max_level truncates the reported table at that level.  The frame is
  *  still built one level further, since beta at level i reads the rank of
  *  d_{i+1}, so the top row of a truncated table is exact rather than an
@@ -934,6 +1103,53 @@ void free_module_resolution_result_data(
  *  extra level too, or 0 on failure, in which case nothing is allocated.
  * --------------------------------------------------------------------- */
 
+/* The multigraded half of export_module_betti: the same Betti numbers and
+ * the same Hilbert numerator, indexed by the multidegrees that actually
+ * occur rather than by a single heft degree.  Macaulay2 has no
+ * minimalBetti for a multigraded module, so this is the novel output.
+ *
+ *   dlen      int32 slots per multidegree, res_grading_len(grading)
+ *   ndegs     number of distinct multidegrees occurring anywhere in the
+ *             resolution, so a bucket u runs over 0 <= u < ndegs
+ *   degs      ndegs * dlen, the multidegrees themselves, in the grading
+ *             group's own order, free part first then torsion residues
+ *   heft      ndegs, the heft degree of each bucket, i.e. the column of
+ *             the heft indexed table each bucket contributes to
+ *   betti     nlevels * ndegs at index i*ndegs + u
+ *   hilbnum   ndegs, the multigraded Hilbert numerator: the coefficient of
+ *             the monomial degs[u] is hilbnum[u].  NULL on a truncated
+ *             table, the numerator being an alternating sum over every
+ *             level, exactly as max_level refuses the heft indexed one
+ *   degshift  dlen, the multidegree subtracted from every row degree, so
+ *             the caller's own degrees are degs plus this
+ *
+ * degs, heft, betti and hilbnum are allocated with mallocp and released by
+ * free_module_mtable_data; degshift is a fixed size array inside the
+ * struct, so nothing has to be freed when only it is wanted.  The struct
+ * is a struct rather than another eight parameters so that a later grading
+ * feature -- a torsion label, a group element handle -- is a new field
+ * instead of a new signature. */
+
+#define RES_MTAB_MAXLEN 64  /* slots the inline degshift holds */
+
+typedef struct res_mtable_t res_mtable_t;
+struct res_mtable_t
+{
+    int32_t  nlevels;
+    int32_t  ndegs;
+    int32_t  dlen;
+    int32_t  degshift[RES_MTAB_MAXLEN];
+    int32_t *degs;
+    int32_t *heft;
+    int32_t *betti;
+    int32_t *hilbnum;
+};
+
+void free_module_mtable_data(
+        void (*freep) (void *),
+        res_mtable_t *mtab
+        );
+
 int64_t export_module_betti(
         void *(*mallocp) (size_t),
         /* return values */
@@ -946,6 +1162,7 @@ int64_t export_module_betti(
         int32_t *reg,        /* may be NULL */
         int32_t *dimension,  /* may be NULL */
         int64_t *degree,     /* may be NULL */
+        res_mtable_t *mtab,  /* may be NULL */
         /* input values */
         const int32_t *lens,
         const int32_t *exps,
@@ -954,7 +1171,8 @@ int64_t export_module_betti(
         const int32_t *row_degs, /* may be NULL */
         const uint32_t field_char,
         const int32_t mon_order,
-        const res_strat_t *strat,   /* NULL means the default */
+        const res_strat_t *strat,     /* NULL means the default  */
+        const res_grading_t *grading, /* NULL means the standard */
         const int32_t nr_vars,
         const int32_t nr_rows,
         const int32_t nr_gens,
@@ -1031,7 +1249,8 @@ res_comp_t *res_comp_new(
         const int32_t *row_degs, /* may be NULL */
         const uint32_t field_char,
         const int32_t mon_order,
-        const res_strat_t *strat,   /* NULL means the default */
+        const res_strat_t *strat,     /* NULL means the default  */
+        const res_grading_t *grading, /* NULL means the standard */
         const int32_t nr_vars,
         const int32_t nr_rows,
         const int32_t nr_gens,
@@ -1080,6 +1299,29 @@ int res_comp_degrees(
         const res_comp_t * const c,
         const int32_t level,
         int32_t *degs
+        );
+
+/* The number of int32 slots one multidegree occupies here, so 1 under the
+ * standard grading.  0 if the handle is unusable. */
+int32_t res_comp_glen(
+        const res_comp_t * const c
+        );
+
+/* The multidegrees of the generators of F_level, res_comp_glen(c) entries
+ * each and res_comp_rank(c, level) of them, written into mdegs.  These are
+ * the shifted degrees, exactly as res_comp_degrees reports the shifted
+ * heft degree; res_comp_multidegshift is the shift.  Returns 0 on success. */
+int res_comp_multidegrees(
+        const res_comp_t * const c,
+        const int32_t level,
+        int32_t *mdegs
+        );
+
+/* The multidegree that was subtracted from every row degree, res_comp_glen
+ * entries written into shift.  Its heft is res_comp_degshift. */
+int res_comp_multidegshift(
+        const res_comp_t * const c,
+        int32_t *shift
         );
 
 /* D_level, as one column per generator of F_level in the flat layout

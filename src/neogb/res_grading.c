@@ -266,6 +266,18 @@ res_dgrp_t *res_dgrp_new(
             res_dgrp_free(&g);
             return NULL;
         }
+        /* The heft degree lands in ev[DEG], which is 16 bits wide, so a
+         * variable heavier than that can never occur in a monomial the hash
+         * table can hold.  Bounding it here keeps every later heft
+         * computation inside deg_t rather than relying on the callers to
+         * notice a truncation. */
+        if (h > UINT16_MAX) {
+            fprintf(ERRSTREAM,
+                    "Variable %u has heft degree %ld, past the 16-bit degree "
+                    "the exponent table holds.\n", (unsigned)j, (long)h);
+            res_dgrp_free(&g);
+            return NULL;
+        }
         g->vhdeg[j] = (deg_t)h;
     }
 
@@ -286,6 +298,49 @@ res_dgrp_t *res_dgrp_new(
     }
 
     return g;
+}
+
+int32_t res_grading_len(
+        const res_grading_t * const g
+        )
+{
+    if (g == NULL) {
+        return 1;
+    }
+    return g->r + g->nt;
+}
+
+res_dgrp_t *res_dgrp_of_grading(
+        const res_grading_t * const grading,
+        const len_t nv
+        )
+{
+    if (grading == NULL) {
+        return res_dgrp_new_standard(nv);
+    }
+    if (grading->r < 0 || grading->nt < 0) {
+        fprintf(ERRSTREAM, "A grading group cannot have a negative number "
+                "of free or torsion factors.\n");
+        return NULL;
+    }
+    if (grading->r + grading->nt > RES_MTAB_MAXLEN) {
+        fprintf(ERRSTREAM, "A grading group of %d factors is past the %d "
+                "this engine reports.\n",
+                grading->r + grading->nt, RES_MTAB_MAXLEN);
+        return NULL;
+    }
+    if (grading->degs == NULL) {
+        fprintf(ERRSTREAM, "A grading needs a degree for every variable.\n");
+        return NULL;
+    }
+    if (grading->nt > 0 && grading->tord == NULL) {
+        fprintf(ERRSTREAM, "A grading with %d torsion factors needs their "
+                "orders.\n", grading->nt);
+        return NULL;
+    }
+
+    return res_dgrp_new(grading->r, grading->nt, grading->tord, nv,
+            grading->degs, grading->heft);
 }
 
 res_dgrp_t *res_dgrp_new_standard(
@@ -407,6 +462,231 @@ res_deg_t res_dpool_push(
     p->ld++;
 
     return d;
+}
+
+/* --------------------------------------------------------------------- *
+ *  Multidegree buckets
+ *
+ *  An open addressed hash set of degrees, storing them in a pool and the
+ *  map only in indices, so a rehash moves no degree data.  Both the hash
+ *  and the equality test go through the group's vtable, which is what lets
+ *  an external group backend be bucketed without this file knowing
+ *  anything about its representation.
+ * --------------------------------------------------------------------- */
+
+res_dbkt_t *res_dbkt_new(
+        const res_dgrp_t *grp,
+        const hl_t sz
+        )
+{
+    hl_t m = 16;
+
+    if (grp == NULL) {
+        return NULL;
+    }
+    while (m < 2 * (sz > 0 ? sz : 1)) {
+        m *= 2;
+    }
+
+    res_dbkt_t *b = (res_dbkt_t *)calloc(1, sizeof(res_dbkt_t));
+    if (b == NULL) {
+        return NULL;
+    }
+    b->grp  = grp;
+    b->msz  = m;
+    b->ld   = 0;
+    b->pool = res_dpool_new(grp, sz > 0 ? sz : 16);
+    b->map  = (hl_t *)calloc((unsigned long)m, sizeof(hl_t));
+    if (b->pool == NULL || b->map == NULL) {
+        res_dbkt_free(&b);
+        return NULL;
+    }
+
+    return b;
+}
+
+void res_dbkt_free(
+        res_dbkt_t **bp
+        )
+{
+    res_dbkt_t *b = *bp;
+
+    if (b == NULL) {
+        return;
+    }
+    res_dpool_free(&b->pool);
+    free(b->map);
+    free(b);
+    *bp = NULL;
+}
+
+res_deg_t res_dbkt_at(
+        const res_dbkt_t * const b,
+        const hl_t i
+        )
+{
+    return res_dpool_at(b->pool, i);
+}
+
+/* The probe sequence, shared by find and insert: returns the map slot
+ * holding a, or the first empty slot if a is absent. */
+static inline hl_t res_dbkt_slot(
+        const res_dbkt_t * const b,
+        const res_deg_t a
+        )
+{
+    const res_dgrp_t * const g = b->grp;
+    const hl_t mask = b->msz - 1;
+    hl_t k = g->hash(g, a) & mask;
+    hl_t i;
+
+    for (i = 0; i < b->msz; ++i) {
+        const hl_t e = b->map[k];
+        if (e == 0) {
+            return k;
+        }
+        if (g->cmp(g, res_dpool_at(b->pool, e - 1), a) == 0) {
+            return k;
+        }
+        k = (k + i + 1) & mask;
+    }
+    return k; /* unreachable: the map is never allowed to fill up */
+}
+
+hl_t res_dbkt_find(
+        const res_dbkt_t * const b,
+        const res_deg_t a
+        )
+{
+    const hl_t e = b->map[res_dbkt_slot(b, a)];
+
+    return e == 0 ? (hl_t)-1 : e - 1;
+}
+
+static int res_dbkt_rehash(
+        res_dbkt_t *b
+        )
+{
+    hl_t i;
+    const hl_t nsz = 2 * b->msz;
+
+    hl_t *nm = (hl_t *)calloc((unsigned long)nsz, sizeof(hl_t));
+    if (nm == NULL) {
+        fprintf(ERRSTREAM, "Could not enlarge the multidegree buckets.\n");
+        return 1;
+    }
+    free(b->map);
+    b->map = nm;
+    b->msz = nsz;
+
+    for (i = 0; i < b->ld; ++i) {
+        b->map[res_dbkt_slot(b, res_dpool_at(b->pool, i))] = i + 1;
+    }
+
+    return 0;
+}
+
+hl_t res_dbkt_insert(
+        res_dbkt_t *b,
+        const res_deg_t a
+        )
+{
+    hl_t k = res_dbkt_slot(b, a);
+
+    if (b->map[k] != 0) {
+        return b->map[k] - 1;
+    }
+    /* keep the map at most half full, which is what bounds the probe */
+    if (2 * (b->ld + 1) > b->msz) {
+        if (res_dbkt_rehash(b)) {
+            return (hl_t)-1;
+        }
+        k = res_dbkt_slot(b, a);
+    }
+
+    hl_t idx = 0;
+    res_deg_t d = res_dpool_push(b->pool, &idx);
+    if (d.e == NULL) {
+        return (hl_t)-1;
+    }
+    res_deg_set(b->grp, d, a);
+    b->map[k] = idx + 1;
+    b->ld++;
+
+    return idx;
+}
+
+/* The sort is over indices rather than degrees, so the pool is permuted
+ * once at the end instead of being swapped through. */
+typedef struct res_dbkt_sctx_t res_dbkt_sctx_t;
+struct res_dbkt_sctx_t
+{
+    const res_dbkt_t *b;
+};
+
+static int res_dbkt_cmp_idx(
+        const void *a,
+        const void *b,
+        void *ctx
+        )
+{
+    const res_dbkt_sctx_t * const c = (const res_dbkt_sctx_t *)ctx;
+    const hl_t ia = *(const hl_t *)a;
+    const hl_t ib = *(const hl_t *)b;
+    const res_dgrp_t * const g = c->b->grp;
+
+    return g->cmp(g, res_dpool_at(c->b->pool, ia), res_dpool_at(c->b->pool, ib));
+}
+
+int res_dbkt_sort(
+        res_dbkt_t *b,
+        hl_t *perm
+        )
+{
+    hl_t i;
+
+    if (b == NULL || b->ld == 0) {
+        return 0;
+    }
+
+    const len_t len = b->grp->len;
+
+    hl_t *ord = (hl_t *)malloc((unsigned long)b->ld * sizeof(hl_t));
+    int32_t *nd = (int32_t *)malloc(
+            (unsigned long)b->ld * (unsigned long)len * sizeof(int32_t));
+    if (ord == NULL || nd == NULL) {
+        free(ord);
+        free(nd);
+        fprintf(ERRSTREAM, "Could not sort the multidegree buckets.\n");
+        return 1;
+    }
+    for (i = 0; i < b->ld; ++i) {
+        ord[i] = i;
+    }
+
+    res_dbkt_sctx_t ctx = {b};
+    sort_r(ord, (unsigned long)b->ld, sizeof(hl_t), res_dbkt_cmp_idx, &ctx);
+
+    /* ord[u] is the old bucket that becomes the new bucket u, so perm --
+     * which the caller applies to a table it already built -- is its
+     * inverse. */
+    for (i = 0; i < b->ld; ++i) {
+        memcpy(nd + (unsigned long)i * len,
+                b->pool->data + (unsigned long)ord[i] * len,
+                (unsigned long)len * sizeof(int32_t));
+        perm[ord[i]] = i;
+    }
+    memcpy(b->pool->data, nd, (unsigned long)b->ld * len * sizeof(int32_t));
+    free(nd);
+    free(ord);
+
+    /* the map still points at the old buckets */
+    memset(b->map, 0, (unsigned long)b->msz * sizeof(hl_t));
+    for (i = 0; i < b->ld; ++i) {
+        b->map[res_dbkt_slot(b, res_dpool_at(b->pool, i))] = i + 1;
+    }
+
+    return 0;
 }
 
 /* --------------------------------------------------------------------- *

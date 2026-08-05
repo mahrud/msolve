@@ -358,10 +358,11 @@ is a lie on any machine that is not the build machine.
 | **M4** | **Done.** `res_diff.c`: `res_diff_new` / `res_diff_init` / `res_diff_compute` / `res_diff_verify`, one Macaulay matrix per (level, degree) with a parallel multiplier row. `export_module_resolution` in `res_module.c` covers both `RES_SYZ_OF_GB` and `RES_SYZ_OF_INPUT` and, with `max_level = 2`, is the single syzygy matrix. Cross-checked in Macaulay2 by `test/neogb/res/res_reference.m2`. |
 | **M5** | **Done.** `res_betti.c`: `res_betti_new` / `res_betti_minimalize` / `res_betti_pdim` / `res_betti_reg` / `res_hilbert_invariants`, and the `export_module_betti` C entry point. Minimal Betti numbers by rank extraction, plus the Hilbert numerator (Macaulay2's `poincare`), projective dimension, regularity, Krull dimension and degree. Fixing the frame's block order is part of this milestone; see the notes. |
 | **M7** | **Partly done:** the incremental half. `res_comp_t` in `res_module.c` is a resolution kept alive — `res_comp_new` / `res_comp_free` / `res_comp_nlevels` / `res_comp_rank` / `res_comp_degrees` / `res_comp_degshift` / `res_comp_is_complete` / `res_comp_differential`, with `res_diff_compute_thru` doing the lazy prefix. Macaulay2 drives it as an ordinary `ResolutionComputation` through `rawMsolveResolution` and the existing `rawResolutionGetFree` / `rawResolutionGetMatrix`, and the `Msolve` package wraps it as `msolveResolution`. What is left of M7 is prune-to-minimal. See the notes. |
+| **M6** | **Done.** `res_grading_t` in `res.h` is the flat description a caller hands in and `res_dgrp_of_grading` turns into the engine's degree group; every entry point takes one and `NULL` is the standard grading. `ht->vwt` carries the variable weights so the Gröbner basis is computed in the *heft* order the grading induces, `res_dbkt_t` in `res_grading.c` buckets multidegrees through the group's own hash and comparison, and `res_betti.c` extracts ranks blocked by multidegree, reporting both the heft table and the multigraded one through `res_mtable_t`. See the notes. |
 | **Orders** | **Done.** `res_strat_t` in `res.h` and `res_order.c`: base order (POT/TOP), component direction (up/down) and lift (Schreyer), threaded from the C entry points to `res_diff_cmp_mon`. `test/neogb/res/res_bench_strategy.c` measures them. The default is unchanged; see the notes for the measurement and why. |
-| **M6, M8, M9** | Not started. M9 is the option surface Macaulay2's `gb`/`syz`/`res` expect; see the notes. |
+| **M8, M9** | Not started. M9 is the option surface Macaulay2's `gb`/`syz`/`res` expect; see the notes. |
 
-Verification in place: `neogb_res_selftest` (434 checks, run by `make check`), the
+Verification in place: `neogb_res_selftest` (515 checks, run by `make check`), the
 64 pre-existing diff tests still pass, and a cyclic-8 Gröbner basis is byte-identical
 to the pristine 0.10.1 baseline with no measurable slowdown.
 `test/neogb/res/res_reference.m2` is the Macaulay2 script every reference number in the
@@ -661,6 +662,137 @@ For ideals the question is empty: with one component POT and TOP coincide, and a
 rank-one run of the benchmark gives frame ratios of exactly 1.000 across all 30
 cases.
 
+### M6 notes: what a grading actually has to touch
+
+The degree-group layer landed with M1 — `res_dgrp_t`, the arithmetic vtable, the
+degree pools, and a full `res_deg_t` on every frame element. What M6 adds is
+everything *between* that and the answer: nothing was reaching it, since every
+entry point called `res_dgrp_new_standard`.
+
+**How a caller says it.** `res_grading_t` — rank of the free part, torsion
+orders, the `(r+nt) × nv` degree matrix, a heft — passed by pointer to every
+entry point, `NULL` meaning the standard grading. Deliberately the same shape as
+`res_strat_t`: extending it is adding a field, not changing a signature, which
+is what the eventual non-abelian backend needs. `row_degs` generalizes with it,
+carrying `res_grading_len(grading)` entries per row.
+
+**Three places a grading has to reach, and only three.**
+
+1. **`ev[DEG]` must be the heft degree.** This is what schedules the whole
+   computation and what DRL compares first, so a grading that does not reach it
+   is decoration. `ht->vwt` holds the per-variable weights and is `NULL` for the
+   standard grading, so the unweighted path is provably the one it always was.
+   Only two sites had to change: `set_module_exponent_vector`, and the module
+   branch of `get_lcm` (`hash.c:1412`) — the one place in the engine that
+   rebuilds a degree from exponents rather than adding two that were already
+   right. Everything else is additive on slot 0 and so weight-agnostic for free.
+   Weighted DRL is a term order exactly because `res_dgrp_new` insists the heft
+   be strictly positive on every variable, which is the same condition that
+   makes the degree-by-degree drivers terminate.
+
+2. **The frame's own ring table needs the same weights.** This one is easy to
+   miss and was: `res_frame_new` builds a *private* table for the frame's
+   monomials, and `res_frame_colon` / `res_frame_init` / `res_diff_init` filled
+   its degree slot with the plain total degree. Under a weighted grading that
+   makes the Schreyer order the differential reduces under a *different* order
+   from the one the level-1 Gröbner basis is a Gröbner basis for. `res_frame_hdeg`
+   is now the single place that slot is computed.
+
+3. **Rank extraction must block by multidegree, not by heft degree.** The
+   differential is multihomogeneous, so its scalar part is block diagonal with
+   respect to multidegree; the finer blocks are the diagonal blocks of the
+   coarser ones. Blocking finer is therefore a *strict improvement* — smaller
+   eliminations, and the multigraded table falls out — never a compromise, and
+   the heft table stays exactly what it was because ranks add over a fibre.
+   `res_dbkt_t` is the hash set that discovers the multidegrees, going through
+   `grp->hash` and `grp->cmp`, which is precisely why those are in the vtable:
+   an external group backend gets bucketing by supplying them.
+
+**What did not have to change: `res_hilbert_invariants`.** Krull dimension and
+degree are read off the *heft* numerator, and dividing by `1 - t^w` contributes
+exactly one zero at `t = 1` whatever the weight `w`, so "write K = (1-t)^c·G,
+then dim = nv − c and degree = G(1)" is already right. Checked against Macaulay2
+on `k[x,y,z]` with degrees (1,2,3) — `dim 1`, `degree 18` — and on P¹×P¹, where
+Macaulay2 collapses along the heft too.
+
+**Homogeneity got stronger.** `st->homogeneous` compares heft degrees, which
+under a multigrading is strictly weaker than being multihomogeneous: `x² + xy`
+is homogeneous for Z and not for Z². `module_gb_from_input` now computes the
+multidegree of every input term and the graded entry points refuse input that is
+only heft-homogeneous. With the standard grading the two coincide, so nothing
+changes there.
+
+**Verification.** `res_test_weighted_*`, `res_test_multigraded_*`,
+`res_test_torsion_betti`, `res_test_degree_buckets`,
+`res_test_explicit_standard_grading` and `res_test_comp_multidegrees` — 81 new
+checks, references in `res_reference.m2`. Each is *discriminating*, confirmed by
+mutation: ignoring the grading entirely gives 18 failures, leaving `ev[DEG]`
+unweighted 1, leaving the frame's table unweighted 1, never reducing torsion 4,
+and bucketing by heft rather than multidegree 3.
+
+The case that carries the milestone is P¹×P¹ with `J = (ac, bd, ad)`: level 2
+holds two generators of the same heft degree 3 in multidegrees (1,2) and (2,1),
+so the heft table reports a single `2` where the multigraded table reports two
+`1`s. Macaulay2 has `multigraded betti` on a resolution it already built, but no
+`minimalBetti` here — so on a large example this is doing something Macaulay2
+cannot.
+
+Two tests earn their keep beyond the obvious. `res_test_weighted_order` uses
+`(y⁴ − x⁵z, z² − x²y²)`, weighted homogeneous of degrees 8 and 6 and *not*
+homogeneous at all for the standard grading: the weights decide which term of
+each generator leads, so dropping them makes the engine refuse the input rather
+than answer it differently. And `res_test_explicit_standard_grading` requires the
+standard grading spelled out as a `res_grading_t` to produce byte-identical
+arrays to `NULL` — which is what makes every other test a test of the grading
+rather than of a second code path.
+
+**What the Macaulay2 binding now does with it.** The one-shot Betti and Hilbert
+entry points — `rawMsolveMinimalBetti` and `rawMsolvePoincare` — hand a
+`res_grading_t` over rather than inferring the grading from the order, so
+`collectGrading` in `msolve.cpp` marshals the ring's own degrees and heft across
+and the exponents go through untouched. Three things follow, all of which were
+open when M6 landed:
+
+- A multigraded ring is resolved as readily as a singly graded one, and there is
+  no separate multigraded entry point, because there is no separate multigraded
+  table: `rawMsolveMinimalBetti` reports the multidegrees themselves, and
+  `unpackMsolveBetti` in `m2/betti.m2` reads them into keys `(i, d, h)` whose `d`
+  is always a degree vector — of length one under a singly graded ring, which is
+  what the slanted layout the engine's own resolutions use had been spelling as
+  a single number all along. The heft-indexed table M2's own `minimalBetti`
+  reports is one `applyKeys(B, (i,d,h) -> (i,{h},h), plus)` away, and `poincare`
+  comes back in all `r` variables of the degrees ring.
+
+  It is a *second* reader rather than a second case of `unpackEngineBetti`
+  because the two layouts have nothing in common past the keys they build. The
+  slanted one is dense and indexed by degree minus level, which only a degree
+  that is a single number can be; a multidegree minus a level is not a
+  multidegree, and the entries are sparse in the lattice — under the seven-fold
+  grading of the `3*P` example, 10520 nonzero entries spread over 12712 buckets
+  and nine levels, with every bucket that carries anything carrying it at
+  exactly one level. So `rawMsolveMinimalBetti` sends the nonzero entries and
+  nothing else, grouped by level:
+
+      [r, len, n_0, ..., n_(len-1), (d_1, ..., d_r, heft, beta) x n_i per level i]
+
+  which is 94691 ints for that example against 216108 for a record per bucket,
+  and packs as a straight scan of `mbetti`, which is stored level-major already.
+  What comes back is a plain `BettiTally`, printing folded onto the heft degree
+  until the caller asks for `multigraded`, as for any other table.
+- The exponent substitution is retired on those paths, so a weighted ring no
+  longer approaches the 16-bit exponent ceiling through its exponents; only the
+  degree accumulated from them is weighted, and that is checked.
+- The monomial order stops mattering to them. msolve works in the heft order its
+  grading induces, and minimal Betti numbers and the Hilbert numerator are
+  invariants of the module rather than of the order, so a ring whose grevlex
+  weights have nothing to do with its degrees is answered instead of refused.
+
+What still infers the grading from the order is `rawMsolveResolution`, whose
+result is a live `ResolutionComputation` handing back Macaulay2 `FreeModule`s one
+at a time; `res_comp_multidegrees` reports what those would need, but building
+them over a general degree monoid is work on the M2 side, so
+`checkSinglyGradedByWeights` keeps that entry point singly graded for now.
+
 ### M9 notes: what the Macaulay2 option tables ask for
 
 M5 finished the *outputs*. What is still entirely missing is *control over the
@@ -727,7 +859,7 @@ becomes available, and `SyzygyRows` can prune work.
 | **M3** | Schreyer frame construction (monomial only) + frame Betti table | Frame ranks match M2 `res(…, Strategy => Nonminimal)` |
 | **M4** | Nonminimal differential (degree-by-degree driver) + **single syzygy matrix** output, both `SYZ_OF_GB` and `SYZ_OF_INPUT` | `d ∘ d = 0`; complexes exact in M2; syzygies generate the same module as M2 `syz` |
 | **M5** | Rank extraction → `minimalBetti` equivalent, plus the Hilbert numerator and the invariants that fall out of it | Betti tables match M2 `minimalBetti` across the corpus, and `poincare` / `pdim` / `regularity` / `dim` / `degree` match on randomised input too |
-| **M6** | Multigraded bucketing, then torsion in the degree group | Cross-check against M2 `res` + `betti` on multigraded examples (M2 has no `minimalBetti` here — this is the novel result) |
+| **M6** | Multigraded bucketing, then torsion in the degree group | Cross-check against M2 `res` + `betti` on multigraded examples (M2 has no `minimalBetti` here — this is the novel result); the heft-indexed table must be unchanged, and the standard grading passed explicitly must be byte-identical to passing none |
 | **M7** | Materialize and export the full complex (flat-array C API, `mallocp` convention), and **incrementally**: a resolution kept alive, answering for the free modules from the frame and computing a differential only when one is asked for | Round-trip into M2; the incremental handle agrees term for term with the one-shot entry point, whatever order the levels are asked for; `prune` to minimal and compare |
 | **M8** | LA backend vtable + CPU reference; then CUDA | Identical results across backends; benchmark sweep incl. sparse inputs where LiftTree should win |
 | **M9** | **Computation controls** — degree ceilings, the Hilbert function hint, a change matrix, and the stop conditions Macaulay2's `gb`/`syz`/`res` options ask for | Each control reproduces the corresponding `gb(…, Option => v)` / `res(…, Option => v)` result in M2; the unconstrained path stays bit-identical |
