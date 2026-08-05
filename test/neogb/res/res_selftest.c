@@ -701,9 +701,18 @@ static void res_check_frame(
     RES_CHECK(ok && seen == rtotal, "the frame ranks match their reference "
             "Macaulay2 nonminimal Betti table");
 
-    /* Hilbert's syzygy theorem: a frame over nv variables cannot reach
-     * past level nv, since it resolves a module of lead terms */
-    RES_CHECK(nlv <= nv + 1, "the frame stops by level nv");
+    /* The frame is a subcomplex of the Taylor complex on level 1, so it
+     * stops by that many levels.  Note this is *not* nv: the frame is a
+     * nonminimal resolution and res_test_frame_past_nv is a three variable
+     * example that reaches level four. */
+    int32_t ngb = 0;
+    if (nlv > 1) {
+        for (d = 0; d <= maxdeg; ++d) {
+            ngb += betti[1*(maxdeg+1) + d];
+        }
+    }
+    RES_CHECK(nlv <= ngb + 1, "the frame stops by the length of the Taylor "
+            "complex on the Gröbner basis");
 
     free(cfs);
     free_module_frame_result_data(free, &betti);
@@ -778,11 +787,16 @@ static void res_test_frame_nonminimal(
             lens, exps, comps, cfs, NULL, 3, 1, 3, 0, ref);
 }
 
-/* Discriminating test for the within-block storage order.  For
- * (x^2, xy, y^3) the ascending order gives the minimal resolution 1,3,2,
- * and the descending one gives 1,3,3,1 -- a valid frame, but one level
- * longer than the projective dimension.  Flipping res_frame_cmp_mono_asc
- * fails this check and passes every other frame test in this file. */
+/* Discriminating test for the within-block storage order, which is degree
+ * ascending and then ring order *descending*.  For (z^2, y^2 z, y^3) that
+ * gives the frame 1,3,3,1, which is what Macaulay2 reports; flipping the
+ * direction in res_frame_cmp_mono gives 1,3,2 instead -- a valid frame,
+ * a smaller one, and the wrong one.  Direction is not about size: on
+ * (z, y^3, x y^2, x^2) the sizes come out the other way round, 1,4,5,2
+ * for descending against 1,4,6,4,1 for ascending.
+ *
+ * The classical (x^2, xy, y^3) does *not* discriminate -- both directions
+ * give 1,3,2 -- so it is kept only as a second small case. */
 static void res_test_frame_block_order(
         void
         )
@@ -795,9 +809,44 @@ static void res_test_frame_block_order(
         0,0,1,  1,2,2,  1,3,1,  2,3,1,  2,4,1,  -1
     };
 
-    res_check_frame("(x^2, xy, y^3) has the short frame 1,3,2, so blocks "
-            "are ordered ascendingly",
+    const int32_t dexps[9] = {0,0,2,  0,2,1,  0,3,0};
+    const int32_t dref[]   = {
+        0,0,1,  1,2,1,  1,3,2,  2,4,2,  2,5,1,  3,5,1,  -1
+    };
+
+    res_check_frame("(z^2, y^2 z, y^3) has the frame 1,3,3,1, so blocks "
+            "are ordered by descending monomial",
+            lens, dexps, comps, cfs, NULL, 3, 1, 3, 0, dref);
+
+    res_check_frame("(x^2, xy, y^3) has the frame 1,3,2",
             lens, exps, comps, cfs, NULL, 3, 1, 3, 0, ref);
+}
+
+/* The frame is a *nonminimal* resolution, so Hilbert's syzygy theorem
+ * does not bound its length: (z, y^2, x^2 y, x^3) resolves in three
+ * variables but its frame runs to level four, 1,4,6,4,1.  Macaulay2 shows
+ * the same table once LengthLimit is raised past its own default of nv,
+ * which is exactly the truncation this used to hide behind. */
+static void res_test_frame_past_nv(
+        void
+        )
+{
+    const int32_t lens[4]   = {1, 1, 1, 1};
+    const int32_t exps[12]  = {0,0,1,  0,2,0,  2,1,0,  3,0,0};
+    const int32_t cfs[4]    = {1, 1, 1, 1};
+    const int32_t comps[4]  = {1, 1, 1, 1};
+    const int32_t ref[]     = {
+        0,0,1,
+        1,1,1,  1,2,1,  1,3,2,
+        2,3,1,  2,4,4,  2,5,1,
+        3,5,3,  3,6,1,
+        4,6,1,
+        -1
+    };
+
+    res_check_frame("the frame of (z, y^2, x^2 y, x^3) reaches level four "
+            "in three variables",
+            lens, exps, comps, cfs, NULL, 3, 1, 4, 0, ref);
 }
 
 /* A rank two module rather than an ideal: the cokernel of the
@@ -1201,12 +1250,13 @@ static void res_test_resolution_koszul(
     const int32_t ranks[]  = {1, 3, 3, 1, -1};
     const int32_t degs[]   = {0,  1,1,1,  2,2,2,  3};
 
-    /* d_1 = (z, y, x), the Gröbner basis in the frame's storage order */
+    /* d_1 = (x, y, z), the Gröbner basis in the frame's storage order,
+     * which sorts a block by descending monomial */
     const int32_t rlen[7]  = {1, 1, 1,  2, 2, 2,  3};
     const int32_t rexp[]   = {
-        0,0,1,   0,1,0,   1,0,0,
-        0,0,1, 0,1,0,   0,0,1, 1,0,0,   0,1,0, 1,0,0,
-        0,0,1, 0,1,0, 1,0,0
+        1,0,0,   0,1,0,   0,0,1,
+        1,0,0, 0,1,0,   1,0,0, 0,0,1,   0,1,0, 0,0,1,
+        1,0,0, 0,1,0, 0,0,1
     };
     const int32_t rcomp[]  = {1, 1, 1,  2,1,  3,1,  3,2,  3,2,1};
     const int32_t p        = RES_FC;
@@ -1253,16 +1303,16 @@ static void res_test_resolution_twisted_cubic(
             lens, exps, comps, cfs, NULL, 4, 1, 3, 0, RES_SYZ_OF_GB,
             ranks, degs);
 
-    /* d_1 is z^2-yw, yz-xw, y^2-xz and d_2 the Hilbert--Burch columns
-     * z e_2 - y e_1 - w e_3 and z e_3 - y e_2 + x e_1 */
+    /* d_1 is y^2-xz, yz-xw, z^2-yw and d_2 the Hilbert--Burch columns
+     * y e_2 - z e_1 - x e_3 and y e_3 - z e_2 + w e_1 */
     const int32_t p        = RES_FC;
     const int32_t rlen[5]  = {2, 2, 2,  3, 3};
     const int32_t rexp[]   = {
-        0,0,2,0, 0,1,0,1,
-        0,1,1,0, 1,0,0,1,
         0,2,0,0, 1,0,1,0,
-        0,0,1,0, 0,1,0,0, 0,0,0,1,
-        0,0,1,0, 0,1,0,0, 1,0,0,0
+        0,1,1,0, 1,0,0,1,
+        0,0,2,0, 0,1,0,1,
+        0,1,0,0, 0,0,1,0, 1,0,0,0,
+        0,1,0,0, 0,0,1,0, 0,0,0,1
     };
     const int32_t rcomp[]  = {1,1, 1,1, 1,1,  2,1,3,  3,2,1};
     const int32_t rcf[]    = {
@@ -1624,6 +1674,423 @@ static void res_test_resolution_rejects_bad_input(
 }
 
 /* --------------------------------------------------------------------- *
+ *  Minimal Betti numbers and Hilbert information
+ *
+ *  Every reference table below came from Macaulay2's
+ *
+ *      minimalBetti M, poincare M, pdim M, regularity M, dim M, degree M
+ *
+ *  over the same prime; see res_reference.m2.  The tables are written as
+ *  (level, degree, value) triples exactly as the frame ones are, so the
+ *  two can be read side by side -- the interesting examples are the ones
+ *  where they differ.
+ * --------------------------------------------------------------------- */
+
+static void res_check_betti(
+        const char *what,
+        const int32_t *lens,
+        const int32_t *exps,
+        const int32_t *comps,
+        const int32_t *cfs_src,
+        const int32_t *row_degs,
+        const int32_t nv,
+        const int32_t nrows,
+        const int32_t ngens,
+        const int32_t *ref,
+        const int32_t rpdim,
+        const int32_t rreg,
+        const int32_t rdim,
+        const int64_t rdeg
+        )
+{
+    int32_t i, l, d;
+
+    int32_t nterms = 0;
+    for (i = 0; i < ngens; ++i) {
+        nterms += lens[i];
+    }
+    /* msolve reduces the coefficient array in place, and this input is
+     * used twice */
+    int32_t *cfs = (int32_t *)malloc((unsigned long)nterms * sizeof(int32_t));
+
+    int32_t nlv = 0, maxdeg = 0, shift = 0;
+    int32_t pdim = -2, reg = -2, dim = -2;
+    int64_t deg  = -1;
+    int32_t *tab = NULL, *num = NULL;
+
+    memcpy(cfs, cfs_src, (unsigned long)nterms * sizeof(int32_t));
+    const int64_t nelts = export_module_betti(malloc, &nlv, &maxdeg, &shift,
+            &tab, &num, &pdim, &reg, &dim, &deg,
+            lens, exps, comps, cfs, row_degs, 32003, 0 /* drl */,
+            RES_MORD_POT, nv, nrows, ngens, 0 /* full */, 1 /* minimal */,
+            1 /* verify */, 12, 1, 0, 2, 0);
+
+    RES_CHECK(nelts > 0 && tab != NULL && num != NULL, what);
+    if (nelts <= 0 || tab == NULL || num == NULL) {
+        free(cfs);
+        free_module_betti_result_data(free, &tab, &num);
+        return;
+    }
+
+    /* every reference entry is present, and nothing else is */
+    int ok = 1;
+    int64_t seen = 0, want = 0;
+    for (i = 0; ref[i] >= 0; i += 3) {
+        want += ref[i+2];
+        if (ref[i] >= nlv || ref[i+1] > maxdeg
+                || tab[ref[i]*(maxdeg+1) + ref[i+1]] != ref[i+2]) {
+            ok = 0;
+        }
+    }
+    for (l = 0; l < nlv; ++l) {
+        for (d = 0; d <= maxdeg; ++d) {
+            seen += tab[l*(maxdeg+1) + d];
+        }
+    }
+    RES_CHECK(ok && seen == want,
+            "the minimal Betti table matches its Macaulay2 reference");
+
+    RES_CHECK(pdim == rpdim, "the projective dimension matches Macaulay2");
+    RES_CHECK(reg == rreg, "the regularity matches Macaulay2");
+    RES_CHECK(dim == rdim, "the Krull dimension matches Macaulay2");
+    RES_CHECK(deg == rdeg, "the degree matches Macaulay2");
+
+    /* The numerator the engine reports is the alternating sum of the
+     * *frame* ranks, computed before any field arithmetic happens; this
+     * recomputes it from the minimal table, which is a different set of
+     * numbers whenever the frame is nonminimal.  The two agreeing is the
+     * telescoping identity of res.h, and it fails the moment a rank
+     * correction lands at the wrong level or degree. */
+    int hok = 1;
+    for (d = 0; d <= maxdeg; ++d) {
+        int32_t s = 0;
+        for (l = 0; l < nlv; ++l) {
+            const int32_t c = tab[l*(maxdeg+1) + d];
+            s = (l & 1) ? s - c : s + c;
+        }
+        if (s != num[d]) {
+            hok = 0;
+        }
+    }
+    RES_CHECK(hok, "the Hilbert numerator is the alternating sum of the "
+            "minimal Betti numbers, not just of the frame ranks");
+
+    /* the same run without the differential must give the frame ranks,
+     * which dominate the minimal ones entry for entry and have the same
+     * alternating sum */
+    int32_t fnlv = 0, fmaxdeg = 0;
+    int32_t *ftab = NULL, *fnum = NULL;
+
+    memcpy(cfs, cfs_src, (unsigned long)nterms * sizeof(int32_t));
+    const int64_t fnelts = export_module_betti(malloc, &fnlv, &fmaxdeg, NULL,
+            &ftab, &fnum, NULL, NULL, NULL, NULL,
+            lens, exps, comps, cfs, row_degs, 32003, 0, RES_MORD_POT,
+            nv, nrows, ngens, 0, 0 /* frame only */, 0, 12, 1, 0, 2, 0);
+
+    RES_CHECK(fnelts == nelts && fnlv == nlv && fmaxdeg == maxdeg
+            && ftab != NULL && fnum != NULL,
+            "the frame only run agrees on the shape of the table");
+    if (ftab != NULL && fnum != NULL && fnlv == nlv && fmaxdeg == maxdeg) {
+        int dom = 1, same = 1;
+        int64_t ftot = 0;
+        for (l = 0; l < nlv; ++l) {
+            for (d = 0; d <= maxdeg; ++d) {
+                const int32_t fv = ftab[l*(maxdeg+1) + d];
+                ftot += fv;
+                if (fv < tab[l*(maxdeg+1) + d]) {
+                    dom = 0;
+                }
+            }
+        }
+        for (d = 0; d <= maxdeg; ++d) {
+            if (fnum[d] != num[d]) {
+                same = 0;
+            }
+        }
+        RES_CHECK(dom, "the frame ranks dominate the minimal Betti numbers");
+        RES_CHECK(ftot == nelts,
+                "the frame ranks add up to the size of the frame");
+        RES_CHECK(same, "both runs report the same Hilbert numerator");
+    }
+    free_module_betti_result_data(free, &ftab, &fnum);
+
+    free(cfs);
+    free_module_betti_result_data(free, &tab, &num);
+}
+
+static void res_test_betti_koszul(
+        void
+        )
+{
+    const int32_t lens[3]  = {1, 1, 1};
+    const int32_t exps[9]  = {1,0,0,  0,1,0,  0,0,1};
+    const int32_t cfs[3]   = {1, 1, 1};
+    const int32_t comps[3] = {1, 1, 1};
+    const int32_t ref[]    = {
+        0,0,1,  1,1,3,  2,2,3,  3,3,1,  -1
+    };
+
+    res_check_betti("the Koszul complex is already minimal, 1,3,3,1",
+            lens, exps, comps, cfs, NULL, 3, 1, 3, ref, 3, 0, 0, 1);
+}
+
+/* The case the whole milestone is for: the frame is 1,6,8,3 and the
+ * minimal resolution is 1,3,3,1, so eleven generators have to be
+ * cancelled by rank corrections.  Everything that could be off by a level
+ * or a degree shows up here. */
+static void res_test_betti_nonminimal(
+        void
+        )
+{
+    const int32_t lens[3]  = {2, 2, 2};
+    const int32_t exps[18] = {
+        2,0,0,  0,1,1,   /* x^2 + yz */
+        0,2,0,  1,0,1,   /* y^2 + xz */
+        0,0,2,  1,1,0    /* z^2 + xy */
+    };
+    const int32_t cfs[6]   = {1, 1, 1, 1, 1, 1};
+    const int32_t comps[6] = {1, 1, 1, 1, 1, 1};
+    const int32_t ref[]    = {
+        0,0,1,  1,2,3,  2,4,3,  3,6,1,  -1
+    };
+
+    res_check_betti("three quadrics minimalize from the frame 1,6,8,3 to "
+            "the Koszul shape 1,3,3,1",
+            lens, exps, comps, cfs, NULL, 3, 1, 3, ref, 3, 3, 0, 8);
+}
+
+static void res_test_betti_twisted_cubic(
+        void
+        )
+{
+    const int32_t lens[3]  = {2, 2, 2};
+    const int32_t exps[24] = {
+        1,0,1,0,  0,2,0,0,
+        1,0,0,1,  0,1,1,0,
+        0,1,0,1,  0,0,2,0
+    };
+    const int32_t cfs[6]   = {1, -1, 1, -1, 1, -1};
+    const int32_t comps[6] = {1, 1, 1, 1, 1, 1};
+    const int32_t ref[]    = {
+        0,0,1,  1,2,3,  2,3,2,  -1
+    };
+
+    res_check_betti("the twisted cubic is the Hilbert-Burch resolution, of "
+            "dimension two and degree three",
+            lens, exps, comps, cfs, NULL, 4, 1, 3, ref, 2, 1, 2, 3);
+}
+
+static void res_test_betti_block_order(
+        void
+        )
+{
+    const int32_t lens[3]  = {1, 1, 1};
+    const int32_t exps[9]  = {2,0,0,  1,1,0,  0,3,0};
+    const int32_t cfs[3]   = {1, 1, 1};
+    const int32_t comps[3] = {1, 1, 1};
+    const int32_t ref[]    = {
+        0,0,1,  1,2,2,  1,3,1,  2,3,1,  2,4,1,  -1
+    };
+
+    res_check_betti("(x^2, xy, y^3) is minimal already, and z leaves it "
+            "one dimensional",
+            lens, exps, comps, cfs, NULL, 3, 1, 3, ref, 2, 2, 1, 4);
+}
+
+/* A rank two module: level 0 carries two generators and the minimal
+ * resolution 2,3,1 sits inside the frame 2,6,5,1, so a whole level
+ * disappears. */
+static void res_test_betti_module(
+        void
+        )
+{
+    const int32_t lens[3]  = {2, 2, 2};
+    const int32_t exps[24] = {
+        1,0,0,0,  0,1,0,0,
+        0,1,0,0,  0,0,1,0,
+        0,0,1,0,  0,0,0,1
+    };
+    const int32_t cfs[6]   = {1, 1, 1, 1, 1, 1};
+    const int32_t comps[6] = {1, 2, 1, 2, 1, 2};
+    const int32_t rd[2]    = {0, 0};
+    const int32_t ref[]    = {
+        0,0,2,  1,1,3,  2,3,1,  -1
+    };
+
+    res_check_betti("the catalecticant cokernel minimalizes from 2,6,5,1 "
+            "to 2,3,1",
+            lens, exps, comps, cfs, rd, 4, 2, 3, ref, 2, 1, 2, 3);
+}
+
+/* Row degrees, and a global shift on top of them: only the differences
+ * matter, so the table is the same and degshift carries the offset. */
+static void res_test_betti_row_degrees(
+        void
+        )
+{
+    const int32_t lens[2]  = {2, 2};
+    const int32_t exps[16] = {
+        2,0,0,0,  0,0,1,0,
+        0,2,0,0,  0,0,0,1
+    };
+    int32_t cfs[4]         = {1, 1, 1, 1};
+    const int32_t comps[4] = {1, 2, 1, 2};
+    const int32_t rd[2]    = {0, 1};
+    const int32_t sd[2]    = {5, 6};
+    const int32_t ref[]    = {
+        0,0,1,  0,1,1,  1,2,2,  -1
+    };
+
+    res_check_betti("coker {{x2,y2},{z,w}} has the minimal table 2,2 with "
+            "the second generator in degree one",
+            lens, exps, comps, cfs, rd, 4, 2, 2, ref, 1, 1, 3, 3);
+
+    int32_t nlv = 0, maxdeg = 0, shift = 0, pdim = -2, reg = -2, dim = -2;
+    int64_t deg  = -1;
+    int32_t *tab = NULL;
+
+    int32_t c2[4] = {1, 1, 1, 1};
+    const int64_t n = export_module_betti(malloc, &nlv, &maxdeg, &shift,
+            &tab, NULL, &pdim, &reg, &dim, &deg,
+            lens, exps, comps, c2, sd, 32003, 0, RES_MORD_POT,
+            4, 2, 2, 0, 1, 1, 12, 1, 0, 2, 0);
+
+    RES_CHECK(n > 0 && tab != NULL && shift == 5,
+            "a global shift of the row degrees is reported, not baked in");
+    if (tab != NULL) {
+        int ok = nlv >= 2 && maxdeg >= 2
+            && tab[0*(maxdeg+1) + 0] == 1
+            && tab[0*(maxdeg+1) + 1] == 1
+            && tab[1*(maxdeg+1) + 2] == 2;
+        RES_CHECK(ok, "shifting every row degree by five leaves the table "
+                "where it was");
+    }
+    /* The table is indexed by degree and so has to stay shifted, but the
+     * scalars are reported in the caller's own degrees: only regularity
+     * sees the difference. */
+    RES_CHECK(reg == 1 + 5, "the regularity comes back on the caller's own "
+            "degree scale, not the shifted one");
+    RES_CHECK(pdim == 1 && dim == 3 && deg == 3,
+            "projective dimension, dimension and degree do not move with "
+            "the shift");
+    free_module_betti_result_data(free, &tab, NULL);
+}
+
+/* Something with a table wide enough to exercise the elimination: the
+ * cube of the maximal ideal in three variables, 1,10,15,6. */
+static void res_test_betti_monomial(
+        void
+        )
+{
+    const int32_t lens[10]   = {1,1,1,1,1,1,1,1,1,1};
+    const int32_t exps[30]   = {
+        3,0,0,  2,1,0,  2,0,1,  1,2,0,  1,1,1,
+        1,0,2,  0,3,0,  0,2,1,  0,1,2,  0,0,3
+    };
+    const int32_t cfs[10]    = {1,1,1,1,1,1,1,1,1,1};
+    const int32_t comps[10]  = {1,1,1,1,1,1,1,1,1,1};
+    const int32_t ref[]      = {
+        0,0,1,  1,3,10,  2,4,15,  3,5,6,  -1
+    };
+
+    res_check_betti("the cube of the maximal ideal in three variables has "
+            "the Eagon-Northcott table 1,10,15,6",
+            lens, exps, comps, cfs, NULL, 3, 1, 10, ref, 3, 2, 0, 10);
+}
+
+/* Six random cubics in four variables.  Every example above has scalar
+ * blocks whose pivots happen to be plus or minus one, so the elimination
+ * gets the right rank even without normalizing its pivot rows; here the
+ * coefficients are generic and it does not.  This is the only check in the
+ * file that fails when res_ech_rank stops dividing by the pivot. */
+static void res_test_betti_generic_cubics(
+        void
+        )
+{
+    const int32_t lens[6]   = {3, 3, 3, 3, 3, 3};
+    const int32_t exps[72]  = {
+        0,1,2,0,  1,1,0,1,  0,2,0,1,
+        1,0,0,2,  1,1,1,0,  1,2,0,0,
+        1,0,1,1,  0,1,1,1,  1,0,0,2,
+        2,1,0,0,  1,0,2,0,  2,0,0,1,
+        1,0,2,0,  1,1,1,0,  2,0,0,1,
+        0,0,1,2,  1,1,1,0,  2,0,1,0
+    };
+    const int32_t cfs[18]   = {
+         3277, 10825, 23704,
+        22284, 19561, 23260,
+        19176, 20404, 27057,
+         3298,  4024,  8445,
+         1838, 10295,  1669,
+        12895, 14444, 10377
+    };
+    const int32_t comps[18] = {
+        1,1,1, 1,1,1, 1,1,1, 1,1,1, 1,1,1, 1,1,1
+    };
+    const int32_t ref[]     = {
+        0,0,1,
+        1,3,6,
+        2,5,12,  2,6,2,
+        3,6,6,   3,7,6,
+        4,8,3,
+        -1
+    };
+
+    res_check_betti("six generic cubics minimalize from the frame "
+            "1,18,39,30,8 to 1,6,14,12,3",
+            lens, exps, comps, cfs, NULL, 4, 1, 6, ref, 4, 4, 1, 8);
+}
+
+/* Truncation keeps the head of the table, but Hilbert information needs
+ * the whole alternating sum and has to be refused. */
+static void res_test_betti_truncation(
+        void
+        )
+{
+    const int32_t lens[3]  = {1, 1, 1};
+    const int32_t exps[9]  = {1,0,0,  0,1,0,  0,0,1};
+    int32_t cfs[3]         = {1, 1, 1};
+    const int32_t comps[3] = {1, 1, 1};
+
+    int32_t nlv = 0, maxdeg = 0;
+    int32_t *tab = NULL, *num = NULL;
+
+    int32_t c1[3] = {1, 1, 1};
+    const int64_t n = export_module_betti(malloc, &nlv, &maxdeg, NULL,
+            &tab, NULL, NULL, NULL, NULL, NULL,
+            lens, exps, comps, c1, NULL, 32003, 0, RES_MORD_POT,
+            3, 1, 3, 2 /* truncate */, 1, 1, 12, 1, 0, 2, 0);
+
+    /* The frame is built to level three so that beta_2 knows about d_3,
+     * hence eight elements, but only levels zero to two are reported. */
+    RES_CHECK(n == 8 && nlv == 3 && tab != NULL,
+            "truncating the Koszul table at level two keeps 1,3,3");
+    if (tab != NULL) {
+        RES_CHECK(tab[0*(maxdeg+1)+0] == 1 && tab[1*(maxdeg+1)+1] == 3
+                && tab[2*(maxdeg+1)+2] == 3,
+                "the truncated table is the head of the full one");
+    }
+    free_module_betti_result_data(free, &tab, &num);
+
+    if (res_st_verbose > 0) {
+        fprintf(VERBSTREAM, "res_selftest: three Betti input errors are "
+                "expected next\n");
+    }
+    RES_CHECK(export_module_betti(malloc, &nlv, &maxdeg, NULL,
+                &tab, &num, NULL, NULL, NULL, NULL,
+                lens, exps, comps, cfs, NULL, 32003, 0, RES_MORD_POT,
+                3, 1, 3, 2, 1, 1, 12, 1, 0, 2, 0) == 0,
+            "a truncated resolution has no Hilbert numerator");
+    RES_CHECK(tab == NULL && num == NULL,
+            "a rejected Betti call allocates nothing");
+    RES_CHECK(export_module_betti(malloc, &nlv, &maxdeg, NULL,
+                &tab, NULL, NULL, NULL, NULL, NULL,
+                lens, exps, comps, cfs, NULL, 32003, 0, RES_MORD_TOP,
+                3, 1, 3, 0, 1, 1, 12, 1, 0, 2, 0) == 0,
+            "term over position is refused by the Betti table too");
+}
+
+/* --------------------------------------------------------------------- *
  *  Entry point
  * --------------------------------------------------------------------- */
 
@@ -1651,6 +2118,7 @@ int main(void)
     res_test_frame_twisted_cubic();
     res_test_frame_nonminimal();
     res_test_frame_block_order();
+    res_test_frame_past_nv();
     res_test_frame_module();
     res_test_frame_row_degrees();
     res_test_frame_truncation();
@@ -1667,6 +2135,15 @@ int main(void)
     res_test_syz_of_input_catalecticant();
     res_test_syz_of_input_is_a_basis_not_a_minimal_one();
     res_test_resolution_rejects_bad_input();
+    res_test_betti_koszul();
+    res_test_betti_nonminimal();
+    res_test_betti_twisted_cubic();
+    res_test_betti_block_order();
+    res_test_betti_module();
+    res_test_betti_row_degrees();
+    res_test_betti_monomial();
+    res_test_betti_generic_cubics();
+    res_test_betti_truncation();
 
     if (verbose > 0) {
         fprintf(VERBSTREAM, "res_selftest: %d checks, %d failures\n",

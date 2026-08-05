@@ -67,7 +67,8 @@ print betti res(ideal flatten entries basis(3, Q), Strategy => Nonminimal);
 -- checked against these matrices term for term; the twisted cubic is not,
 -- and there msolve returns a Gröbner basis of the syzygy module, which
 -- has one redundant element more than Macaulay2's minimal answer.
--- Minimalization is M5.
+-- M5 minimalizes Betti *numbers*, by rank extraction; it does not
+-- minimalize a generating set, so that difference is still there.
 -- ---------------------------------------------------------------------
 
 use Q;
@@ -118,3 +119,78 @@ verify = (name, D, I) -> (
 -- when the generating set is not minimal
 sameSyzygies = (name, S, f) -> print("   " | name | " : " |
     toString (image strip S == image strip syz f));
+
+-- ---------------------------------------------------------------------
+-- Minimal Betti numbers and Hilbert information.
+--
+-- What export_module_betti reports, in the same (level, degree, value)
+-- form the frame tables above use.  The interesting rows are the ones
+-- where this differs from the frame: three quadrics minimalize 1,6,8,3
+-- down to 1,3,3,1 and the catalecticant 2,6,5,1 down to 2,3,1.
+--
+-- poincare is the numerator of the Hilbert series over (1-T)^nv, which
+-- the engine gets from the *frame* alone -- no field arithmetic at all --
+-- and which the selftest re-derives from the minimal table as a check
+-- that the rank corrections landed at the right level and degree.
+-- ---------------------------------------------------------------------
+
+report = (name, M) -> (
+    print("== " | name);
+    print("   minimalBetti : " | toString new HashTable from minimalBetti M);
+    print("   poincare     : " | toString poincare M);
+    print("   pdim         : " | toString pdim M);
+    print("   regularity   : " | toString regularity M);
+    print("   dim          : " | toString dim M);
+    print("   degree       : " | toString degree M);
+    );
+
+use Q;
+report("koszul (x,y,z)", Q^1/ideal(x,y,z));
+report("(x2,xy,y3)", Q^1/ideal(x^2,x*y,y^3));
+report("three quadrics", Q^1/Jq);
+report("m^3 in 3 vars", Q^1/ideal flatten entries basis(3,Q));
+report("degree 4 monomials in x,y", Q^1/ideal(x^4,x^3*y,x^2*y^2,x*y^3,y^4));
+
+use R;
+report("twisted cubic", R^1/Itc);
+report("catalecticant cokernel", coker A);
+report("shifted coker {{x2,y2},{z,w}}",
+    coker(map(R^{0,-1}, R^{-2,-2}, B)));
+
+-- Six random cubics in four variables.  Every smaller example has scalar
+-- blocks whose pivots are plus or minus one, so the rank extraction gets
+-- away without normalizing its pivot rows; this one does not, and is the
+-- only check in res_selftest.c that catches that.
+S = ZZ/p[x_1..x_4];
+Icub = ideal(
+     3277*x_2*x_3^2 + 10825*x_1*x_2*x_4 + 23704*x_2^2*x_4,
+    22284*x_1*x_4^2 + 19561*x_1*x_2*x_3 + 23260*x_1*x_2^2,
+    19176*x_1*x_3*x_4 + 20404*x_2*x_3*x_4 + 27057*x_1*x_4^2,
+     3298*x_1^2*x_2 + 4024*x_1*x_3^2 + 8445*x_1^2*x_4,
+     1838*x_1*x_3^2 + 10295*x_1*x_2*x_3 + 1669*x_1^2*x_4,
+    12895*x_3*x_4^2 + 14444*x_1*x_2*x_3 + 10377*x_1^2*x_3);
+report("six generic cubics", S^1/Icub);
+print("   frame        : " | toString new HashTable from
+    betti res(S^1/Icub, Strategy => Nonminimal));
+
+-- ---------------------------------------------------------------------
+-- The frame is a *nonminimal* resolution, so Hilbert's syzygy theorem
+-- does not bound its length.  Macaulay2 truncates at nv by default, which
+-- hides this; raise LengthLimit and both engines agree that the frame of
+-- (z, y^2, x^2 y, x^3) reaches level four in three variables.
+--
+-- The same examples pin down the one free choice in the frame, the order
+-- of a block: degree ascending and then monomial order *descending*, per
+-- res-f4-computation.cpp's sort(1, -1) and the PreElementSorter of
+-- res-schreyer-frame.cpp.  Flipping it gives 1,3,2 for the first ideal
+-- below and 1,4,6,4,1 for the third, neither of which is what Macaulay2
+-- reports.
+-- ---------------------------------------------------------------------
+
+use Q;
+for I in {ideal(z^2, y^2*z, y^3),
+          ideal(z, y^2, x^2*y, x^3),
+          ideal(z, y^3, x*y^2, x^2)} do (
+    print("-- " | toString I);
+    print betti res(I, Strategy => Nonminimal, LengthLimit => 8);
+    );

@@ -1267,3 +1267,259 @@ cleanup:
 
     return nterms;
 }
+
+/* --------------------------------------------------------------------- *
+ *  Minimal Betti numbers and Hilbert information
+ * --------------------------------------------------------------------- */
+
+void free_module_betti_result_data(
+        void (*freep) (void *),
+        int32_t **betti,
+        int32_t **hilbnum
+        )
+{
+    if (betti != NULL && *betti != NULL) {
+        (*freep)(*betti);
+        *betti = NULL;
+    }
+    if (hilbnum != NULL && *hilbnum != NULL) {
+        (*freep)(*hilbnum);
+        *hilbnum = NULL;
+    }
+}
+
+int64_t export_module_betti(
+        void *(*mallocp) (size_t),
+        int32_t *nlevels,
+        int32_t *maxdeg,
+        int32_t *degshift,
+        int32_t **betti,
+        int32_t **hilbnum,
+        int32_t *pdim,
+        int32_t *reg,
+        int32_t *dimension,
+        int64_t *degree,
+        const int32_t *lens,
+        const int32_t *exps,
+        const int32_t *comps,
+        const void *cfs,
+        const int32_t *row_degs,
+        const uint32_t field_char,
+        const int32_t mon_order,
+        const int32_t module_order,
+        const int32_t nr_vars,
+        const int32_t nr_rows,
+        const int32_t nr_gens,
+        const int32_t max_level,
+        const int32_t minimal,
+        const int32_t verify,
+        const int32_t ht_size,
+        const int32_t nr_threads,
+        const int32_t max_nr_pairs,
+        const int32_t la_option,
+        const int32_t info_level
+        )
+{
+    int32_t i;
+    int64_t nelts   = 0;
+    md_t *st        = NULL;
+    res_betti_t *bt = NULL;
+    int32_t *tab    = NULL;
+    int32_t *num    = NULL;
+
+    *nlevels = 0;
+    *maxdeg  = 0;
+    if (degshift != NULL) {
+        *degshift = 0;
+    }
+    if (betti != NULL) {
+        *betti = NULL;
+    }
+    if (hilbnum != NULL) {
+        *hilbnum = NULL;
+    }
+
+    if (module_order != RES_MORD_POT) {
+        fprintf(ERRSTREAM, "Betti numbers are only implemented for the "
+                "position over term module order, since the differential "
+                "they are extracted from is.\n");
+        return 0;
+    }
+    if (max_level < 0) {
+        fprintf(ERRSTREAM, "A negative truncation level makes no sense.\n");
+        return 0;
+    }
+
+    /* module_gb_from_input normalizes the row degrees to start at zero.
+     * The tables are arrays indexed by degree and so have to stay on that
+     * scale, with degshift reporting the offset; the scalars below do not,
+     * and are reported in the caller's own degrees. */
+    int32_t dshift = 0;
+    if (row_degs != NULL && nr_rows > 0) {
+        dshift = row_degs[0];
+        for (i = 1; i < nr_rows; ++i) {
+            if (row_degs[i] < dshift) {
+                dshift = row_degs[i];
+            }
+        }
+    }
+    if (degshift != NULL) {
+        *degshift = dshift;
+    }
+
+    bs_t *gb = module_gb_from_input(&st, lens, exps, comps, cfs, row_degs,
+            field_char, mon_order, module_order, nr_vars, nr_rows, nr_gens,
+            ht_size, nr_threads, max_nr_pairs, la_option, 1 /* reduce */,
+            info_level);
+    if (gb == NULL) {
+        return 0;
+    }
+
+    ht_t *bht = gb->ht;
+
+    if (!module_input_is_graded(st)) {
+        free_shared_hash_data(bht);
+        free_basis(&gb);
+        free(st);
+        return 0;
+    }
+
+    res_dgrp_t *grp = res_dgrp_new_standard(nr_vars);
+    int32_t *rowmd  = (int32_t *)calloc(
+            (unsigned long)nr_rows, sizeof(int32_t));
+    /* One level past what is reported: beta_{i,d} reads the rank of
+     * d_{i+1} as well as of d_i, so the top level of a truncated table is
+     * only right if the level above it was built.  Macaulay2's
+     * minimalBetti does the same. */
+    res_frame_t *f  = grp != NULL
+        ? res_frame_new(grp, st, max_level > 0 ? max_level + 1 : 0) : NULL;
+    res_diff_t *rd  = NULL;
+
+    if (grp == NULL || rowmd == NULL || f == NULL) {
+        fprintf(ERRSTREAM, "Could not set up the Schreyer frame.\n");
+        goto cleanup;
+    }
+    for (i = 0; i < nr_rows; ++i) {
+        rowmd[i] = (int32_t)bht->cshift[i+1];
+    }
+
+    if (res_frame_init(f, gb, bht, rowmd)) {
+        goto cleanup;
+    }
+    nelts = res_frame_complete(f);
+    if (nelts < 0 || res_frame_verify(f)) {
+        nelts = 0;
+        goto cleanup;
+    }
+
+    const int complete = res_frame_is_complete(f);
+    if (!complete && (hilbnum != NULL || dimension != NULL
+                || degree != NULL || pdim != NULL || reg != NULL)) {
+        fprintf(ERRSTREAM, "Invariants of the whole module need the whole "
+                "resolution -- the Hilbert numerator is an alternating sum "
+                "over every level -- and the frame was truncated at level "
+                "%d.\n", max_level);
+        nelts = 0;
+        goto cleanup;
+    }
+
+    bt = res_betti_new(f);
+    if (bt == NULL) {
+        fprintf(ERRSTREAM, "Could not tabulate the frame ranks.\n");
+        nelts = 0;
+        goto cleanup;
+    }
+
+    if (minimal) {
+        rd = res_diff_new(f, st->fc);
+        if (rd == NULL) {
+            fprintf(ERRSTREAM, "Could not set up the differential.\n");
+            nelts = 0;
+            goto cleanup;
+        }
+        if (res_diff_init(rd, gb, bht, st) || res_diff_compute(rd)) {
+            nelts = 0;
+            goto cleanup;
+        }
+        if (res_diff_verify(rd, verify != 0)) {
+            fprintf(ERRSTREAM, "The computed differential is not a "
+                    "complex.\n");
+            nelts = 0;
+            goto cleanup;
+        }
+        if (res_betti_minimalize(bt, rd)) {
+            nelts = 0;
+            goto cleanup;
+        }
+    }
+
+    /* Every scalar is derived before a single byte is handed out, so that
+     * mallocp -- which comes without a matching free -- is only ever
+     * called once nothing downstream of it can fail. */
+    /* The extra level exists only to make the top of the table right; it
+     * is not part of what was asked for. */
+    const len_t rlv  = (max_level > 0 && (len_t)max_level + 1 < bt->nlv)
+        ? (len_t)max_level + 1 : bt->nlv;
+    const size_t nd  = (size_t)bt->maxdeg + 1;
+    const size_t tsz = (size_t)rlv * nd * sizeof(int32_t);
+    int32_t xdim     = -1;
+    int64_t xdeg     = 0;
+
+    if (dimension != NULL || degree != NULL) {
+        if (res_hilbert_invariants(bt->hilb, (len_t)nd, (len_t)nr_vars,
+                    &xdim, &xdeg)) {
+            nelts = 0;
+            goto cleanup;
+        }
+    }
+
+    if (betti != NULL) {
+        tab = (int32_t *)(*mallocp)(tsz);
+    }
+    if (hilbnum != NULL) {
+        num = (int32_t *)(*mallocp)(nd * sizeof(int32_t));
+    }
+    if ((betti != NULL && tab == NULL) || (hilbnum != NULL && num == NULL)) {
+        fprintf(ERRSTREAM, "Could not allocate the Betti table.\n");
+        nelts = 0;
+        goto cleanup;
+    }
+
+    if (tab != NULL) {
+        memcpy(tab, bt->betti, tsz);
+        *betti = tab;
+    }
+    if (num != NULL) {
+        memcpy(num, bt->hilb, nd * sizeof(int32_t));
+        *hilbnum = num;
+    }
+    const int32_t xpd = res_betti_pdim(bt);
+    if (pdim != NULL) {
+        *pdim = xpd;
+    }
+    if (reg != NULL) {
+        /* -1 is the zero module here, not a degree, so it is not shifted */
+        *reg = xpd < 0 ? -1 : res_betti_reg(bt) + dshift;
+    }
+    if (dimension != NULL) {
+        *dimension = xdim;
+    }
+    if (degree != NULL) {
+        *degree = xdeg;
+    }
+
+    *nlevels = (int32_t)rlv;
+    *maxdeg  = (int32_t)bt->maxdeg;
+
+cleanup:
+    res_betti_free(&bt);
+    res_diff_free(&rd);
+    res_frame_free(&f);
+    res_dgrp_free(&grp);
+    free(rowmd);
+    free_shared_hash_data(bht);
+    free_basis(&gb);
+    free(st);
+
+    return nelts;
+}

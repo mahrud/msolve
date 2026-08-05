@@ -242,9 +242,11 @@ struct res_level_t
 typedef struct res_frame_t res_frame_t;
 struct res_frame_t
 {
-    res_level_t      *lv;     /* lv[0 .. maxlv]                        */
+    res_level_t      *lv;     /* lv[0 .. lvsz)                         */
     len_t             nlv;    /* number of levels built, so lv[0,nlv)  */
-    len_t             maxlv;  /* highest level index that may be built */
+    len_t             lvsz;   /* levels allocated                      */
+    len_t             maxlv;  /* highest level index that may be built,
+                               * or 0 for no ceiling at all            */
     ht_t             *ht;     /* ring monomials of the frame; a plain
                                * table, the component lives in up      */
     const res_dgrp_t *grp;
@@ -261,9 +263,15 @@ struct res_frame_t
 };
 
 /* md supplies the number of variables, the ring order and the initial
- * hash table size; a private ring hash table is built from it.  Levels
- * 0 to maxlevel may be built; pass maxlevel <= 0 for the number of
- * variables, which by Hilbert's syzygy theorem is always enough. */
+ * hash table size; a private ring hash table is built from it.  Levels 0
+ * to maxlevel may be built; pass maxlevel <= 0 for no ceiling, which is
+ * the only way to get a complete frame.
+ *
+ * There is no a priori level that is "always enough".  The frame is a
+ * nonminimal resolution, so Hilbert's syzygy theorem does not apply to
+ * it: (z, y^2, x^2 y, x^3) in three variables has the frame 1,4,6,4,1 and
+ * so reaches level four.  Any ceiling is therefore a truncation, and
+ * res_frame_is_complete is what tells the two apart. */
 res_frame_t *res_frame_new(
         const res_dgrp_t *grp,
         const md_t *md,
@@ -299,6 +307,13 @@ len_t res_frame_next_level(
  * arbitrary point and its ranks mean nothing. */
 int64_t res_frame_complete(
         res_frame_t *f
+        );
+
+/* Whether the frame ended on its own -- a level came out empty -- rather
+ * than being cut off at maxlv.  Alternating sums over a cut off frame are
+ * missing their tail, so anything Hilbert refuses to run on one. */
+int res_frame_is_complete(
+        const res_frame_t * const f
         );
 
 /* Checks the invariants the rest of the engine reads the frame through:
@@ -429,6 +444,101 @@ int res_diff_verify(
         );
 
 /* --------------------------------------------------------------------- *
+ *  Minimal Betti numbers, by rank extraction
+ *
+ *  The frame gives the ranks of a *nonminimal* resolution.  The minimal
+ *  ones come from it without ever building the minimal complex: for each
+ *  level i and degree d let (d_i)_d be the part of the differential whose
+ *  ring monomial is 1, a plain scalar matrix over F_p from the generators
+ *  of F_i in degree d to those of F_{i-1} in degree d.  Then
+ *
+ *      beta_{i,d} = frame_{i,d} - rank (d_i)_d - rank (d_{i+1})_d,
+ *
+ *  because a constant entry of the differential cancels one generator
+ *  against one generator one level down, and the ranks count how many such
+ *  cancellations are independent.  Only ranks are ever needed -- no back
+ *  substitution, no minimalized complex -- which is what makes this
+ *  dramatically cheaper than resolving and then pruning.
+ *
+ *  The blocks are mutually independent across (i, d) and dense-ish, which
+ *  is what makes them the natural device offload target.
+ *
+ *  The Hilbert numerator is cheaper again.  Writing the Hilbert series of
+ *  the resolved module as K(t) / (1-t)^nv, the numerator K is
+ *
+ *      K_d = sum_i (-1)^i beta_{i,d} = sum_i (-1)^i frame_{i,d},
+ *
+ *  the two agreeing because the rank corrections telescope away.  So K
+ *  needs no field arithmetic beyond the Gröbner basis: the frame alone
+ *  determines it, and res_betti_new fills it in without ever looking at a
+ *  differential.  This is Macaulay2's poincare, up to the degree shift
+ *  applied to row_degs.  It is only correct for a *complete* frame, since
+ *  a truncated one is missing the tail of the alternating sum.
+ * --------------------------------------------------------------------- */
+
+typedef struct res_betti_t res_betti_t;
+struct res_betti_t
+{
+    const res_frame_t *f;  /* not owned                                  */
+    len_t    nlv;          /* levels, so 0 <= i < nlv                    */
+    deg_t    maxdeg;       /* largest degree, so 0 <= d <= maxdeg        */
+    int32_t *frame;        /* nlv*(maxdeg+1), the nonminimal ranks       */
+    int32_t *rank;         /* nlv*(maxdeg+1), rank of the scalar part of
+                            * d_i in degree d; row 0 is zero, there
+                            * being no d_0                               */
+    int32_t *betti;        /* nlv*(maxdeg+1) minimal Betti numbers, but
+                            * a copy of frame until res_betti_minimalize
+                            * has run                                    */
+    int32_t *hilb;         /* maxdeg+1 Hilbert numerator coefficients    */
+    int      minimal;      /* 1 once res_betti_minimalize has run        */
+    int      bad;
+};
+
+/* Tabulates the frame ranks and the Hilbert numerator.  The frame must be
+ * complete for the numerator to mean anything. */
+res_betti_t *res_betti_new(
+        const res_frame_t * const f
+        );
+
+void res_betti_free(
+        res_betti_t **bp
+        );
+
+/* Extracts the ranks of the scalar parts of rd and turns the frame ranks
+ * into minimal Betti numbers.  rd must be the differential of the very
+ * frame the table was built from.  Returns 0 on success. */
+int res_betti_minimalize(
+        res_betti_t *b,
+        const res_diff_t * const rd
+        );
+
+/* Projective dimension and Castelnuovo-Mumford regularity, the largest i
+ * and the largest d - i carrying a nonzero entry.  Both are -1 for the
+ * zero module, and both are upper bounds rather than the real thing until
+ * res_betti_minimalize has run. */
+int32_t res_betti_pdim(
+        const res_betti_t * const b
+        );
+
+int32_t res_betti_reg(
+        const res_betti_t * const b
+        );
+
+/* Krull dimension and degree (multiplicity) from a Hilbert numerator of
+ * len coefficients over nv variables: writing num(t) = (1-t)^c * G(t) with
+ * G(1) != 0, the dimension is nv - c and the degree is G(1).  Both are
+ * unaffected by the degree shift, which only multiplies num by a power of
+ * t.  The zero module reports dimension -1 and degree 0.  Either output
+ * may be NULL.  Returns 0 on success. */
+int res_hilbert_invariants(
+        const int32_t * const num,
+        const len_t len,
+        const len_t nv,
+        int32_t *dim,
+        int64_t *degree
+        );
+
+/* --------------------------------------------------------------------- *
  *  Gröbner bases of submodules of a free module
  *
  *  export_module_f4 is the module counterpart of export_f4 in f4.h: it
@@ -513,8 +623,11 @@ void free_module_f4_result_data(
  *  Degrees are shifted so that the smallest of row_degs is zero, exactly
  *  as in export_module_f4; the caller can shift them back.
  *
- *  max_level truncates the computation after that many levels; pass 0 for
- *  nr_vars, which is always enough.  betti is allocated with mallocp and
+ *  max_level truncates the computation after that many levels; pass 0 to
+ *  run to completion.  Note the frame is a *nonminimal* resolution and can
+ *  be longer than nr_vars -- (z, y^2, x^2 y, x^3) in three variables has
+ *  the frame 1,4,6,4,1 -- so nr_vars is not a safe ceiling.  betti is
+ *  allocated with mallocp and
  *  released by free_module_frame_result_data.  The return value is the
  *  total number of frame elements, or 0 on failure, in which case nothing
  *  is allocated.
@@ -589,8 +702,10 @@ void free_module_frame_result_data(
  *    dcf     one int32_t coefficient per term
  *
  *  max_level truncates at that level, so max_level = 2 is the single
- *  syzygy matrix and 0 means nr_vars, which by Hilbert's syzygy theorem is
- *  always enough.  RES_SYZ_OF_INPUT accepts no max_level above 2, since
+ *  syzygy matrix and 0 runs to completion.  There is no level that is
+ *  always enough: the complex reported here is the nonminimal one and can
+ *  run past nr_vars, unlike the minimal resolution Hilbert's syzygy
+ *  theorem bounds.  RES_SYZ_OF_INPUT accepts no max_level above 2, since
  *  resolving beyond the first syzygies is the Gröbner basis story again.
  *
  *  verify != 0 additionally runs the exact d o d = 0 check of
@@ -657,6 +772,98 @@ void free_module_resolution_result_data(
         int32_t **dexp,
         int32_t **dcomp,
         void **dcf
+        );
+
+/* --------------------------------------------------------------------- *
+ *  Minimal Betti numbers and Hilbert information
+ *
+ *  Takes exactly the input of export_module_f4 and reports invariants of
+ *  the module it presents, that is of R^nr_rows modulo the submodule the
+ *  columns generate.  Nothing here materializes a resolution: with
+ *  minimal != 0 the nonminimal differential is computed and immediately
+ *  reduced to the ranks of its scalar parts, and with minimal == 0 not one
+ *  field operation happens past the Gröbner basis.
+ *
+ *    betti     (*nlevels)*(*maxdeg+1) entries, the number of generators of
+ *              the minimal resolution at level i in degree d at index
+ *              i*(*maxdeg+1) + d.  With minimal == 0 these are the frame
+ *              ranks instead, which bound the minimal ones from above.
+ *              Level 0 is R^nr_rows, so an ideal starts with a single 1.
+ *    hilbnum   *maxdeg+1 coefficients of the numerator of the Hilbert
+ *              series over (1-t)^nr_vars, low degree first; Macaulay2
+ *              calls this poincare.  It is the alternating sum of either
+ *              table and so costs nothing beyond the frame, but it needs
+ *              a complete resolution: max_level must not truncate.
+ *    pdim      projective dimension, the largest level with a generator
+ *    reg       Castelnuovo-Mumford regularity, the largest d - i
+ *    dimension Krull dimension of the module, nr_vars minus the order of
+ *              vanishing of the numerator at t = 1
+ *    degree    degree (multiplicity), the numerator divided by that many
+ *              factors of (1-t) and evaluated at 1
+ *
+ *  betti and hilbnum are arrays indexed by degree, so they have to start
+ *  at zero: their degrees are shifted so that the smallest of row_degs is
+ *  zero, exactly as everywhere else here, and degshift reports the shift
+ *  that was applied.  The caller's own degrees are betti's plus degshift,
+ *  and its own numerator is hilbnum times t^degshift.  The four scalars
+ *  are under no such constraint and are reported in the caller's own
+ *  degrees: reg has degshift already added, and pdim, dimension and degree
+ *  do not depend on it at all.  The zero module reports dimension -1,
+ *  degree 0 and pdim = reg = -1.
+ *
+ *  max_level truncates the reported table at that level.  The frame is
+ *  still built one level further, since beta at level i reads the rank of
+ *  d_{i+1}, so the top row of a truncated table is exact rather than an
+ *  upper bound.  pdim, reg, dimension, degree and hilbnum are refused on a
+ *  truncated table: they are invariants of the whole module and there is
+ *  no level past which the frame is known to be empty -- it is a
+ *  nonminimal resolution and really can run past nr_vars.
+ *
+ *  Every return value except nlevels and maxdeg may be NULL and is then
+ *  not computed.  betti and hilbnum are allocated with mallocp and are
+ *  released by free_module_betti_result_data.  The return value is the
+ *  number of frame elements built, which for a truncated table counts the
+ *  extra level too, or 0 on failure, in which case nothing is allocated.
+ * --------------------------------------------------------------------- */
+
+int64_t export_module_betti(
+        void *(*mallocp) (size_t),
+        /* return values */
+        int32_t *nlevels,
+        int32_t *maxdeg,
+        int32_t *degshift,   /* may be NULL */
+        int32_t **betti,     /* may be NULL */
+        int32_t **hilbnum,   /* may be NULL */
+        int32_t *pdim,       /* may be NULL */
+        int32_t *reg,        /* may be NULL */
+        int32_t *dimension,  /* may be NULL */
+        int64_t *degree,     /* may be NULL */
+        /* input values */
+        const int32_t *lens,
+        const int32_t *exps,
+        const int32_t *comps,
+        const void *cfs,
+        const int32_t *row_degs, /* may be NULL */
+        const uint32_t field_char,
+        const int32_t mon_order,
+        const int32_t module_order,
+        const int32_t nr_vars,
+        const int32_t nr_rows,
+        const int32_t nr_gens,
+        const int32_t max_level,
+        const int32_t minimal,
+        const int32_t verify,
+        const int32_t ht_size,
+        const int32_t nr_threads,
+        const int32_t max_nr_pairs,
+        const int32_t la_option,
+        const int32_t info_level
+        );
+
+void free_module_betti_result_data(
+        void (*freep) (void *),
+        int32_t **betti,
+        int32_t **hilbnum
         );
 
 #ifdef __cplusplus

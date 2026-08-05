@@ -38,6 +38,7 @@ EXTRA_DIST	=		basis.h \
 								nf.c \
 								order.c \
 								res.h \
+								res_betti.c \
 								res_diff.c \
 								res_frame.c \
 								res_grading.c \

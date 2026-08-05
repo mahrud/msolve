@@ -100,14 +100,14 @@ New files are added to that include list, after `la_ff_32.c` and before `engine.
 #include "res_order.c"     /* Schreyer/POT/TOP module orders          */
 #include "res_frame.c"     /* Schreyer frame construction (monomial only) */
 #include "res_diff.c"      /* nonminimal differential, degree-by-degree driver */
-#include "res_module.c"    /* module GB, frame and resolution C entry points */
+#include "res_betti.c"     /* rank extraction, Betti table, Hilbert numerator */
+#include "res_module.c"    /* module GB, frame, resolution and Betti entry points */
 #include "res_la.c"        /* backend vtable + CPU reference kernels */
-#include "res_betti.c"     /* rank extraction, Betti table */
 ```
 
-The first five exist; `res_la.c` is M8 and `res_betti.c` is M5.  The flat-array C API
-that was sketched as `res_export.c` lives in `res_module.c` next to the entry points
-that need `module_gb_from_input`, rather than in a file of its own.
+All but `res_la.c`, which is M8, exist.  The flat-array C API that was sketched as
+`res_export.c` lives in `res_module.c` next to the entry points that need
+`module_gb_from_input`, rather than in a file of its own.
 
 Public headers go in `src/neogb/res.h`, added to `libneogb.h` and to `Makefile.am:4-6`.
 Note `libneogb.h` has **no `extern "C"` guard** (unlike `msolve.h`) — add one to `res.h`.
@@ -306,8 +306,9 @@ explicit column maps in the new `res_block_t`.
 
 ### Rank extraction
 
-For each (i, multidegree j) the degree-0 part of d_i is a scalar matrix over 𝔽_p; apply the
-formula above. These matrices are **dense-ish and mutually independent across (i, j)** — the
+For each (i, multidegree j) the degree-0 part of d_i is a scalar matrix over 𝔽_p — rows the
+generators of F_i in degree j, columns those of F_{i-1} in degree j, entries the
+coefficients of the terms whose ring monomial is 1 — and the formula above applies. These matrices are **dense-ish and mutually independent across (i, j)** — the
 natural GPU/NPU target. A rank-only kernel can **skip back-substitution entirely**, unlike
 `exact_dense_linear_algebra_ff_32` (`la_ff_32.c:3390`), whose interreduction pass
 (`la_ff_32.c:3354`) exists only to produce RREF. Note there is currently no function named
@@ -354,9 +355,10 @@ is a lie on any machine that is not the build machine.
 | **M2** | **Done.** Module-aware `get_lcm`, `insert_and_update_spairs` and `find_multiplied_reducer`; `res_module.c` with the `export_module_f4` C entry point taking a presentation matrix. Macaulay2 calls it through `rawMsolveModuleGB` in `Macaulay2/e/interface/msolve.{h,cpp}`. |
 | **M3** | **Done.** `res_frame.c`: `res_frame_new` / `res_frame_init` / `res_frame_next_level` / `res_frame_complete`, frame ranks via `res_frame_betti`, and the `export_module_frame` C entry point. `res_module.c`'s validate-import-F4 preamble is now shared by both entry points as `module_gb_from_input`. |
 | **M4** | **Done.** `res_diff.c`: `res_diff_new` / `res_diff_init` / `res_diff_compute` / `res_diff_verify`, one Macaulay matrix per (level, degree) with a parallel multiplier row. `export_module_resolution` in `res_module.c` covers both `RES_SYZ_OF_GB` and `RES_SYZ_OF_INPUT` and, with `max_level = 2`, is the single syzygy matrix. Cross-checked in Macaulay2 by `test/neogb/res/res_reference.m2`. |
-| **M5–M8** | Not started. |
+| **M5** | **Done.** `res_betti.c`: `res_betti_new` / `res_betti_minimalize` / `res_betti_pdim` / `res_betti_reg` / `res_hilbert_invariants`, and the `export_module_betti` C entry point. Minimal Betti numbers by rank extraction, plus the Hilbert numerator (Macaulay2's `poincare`), projective dimension, regularity, Krull dimension and degree. Fixing the frame's block order is part of this milestone; see the notes. |
+| **M6–M8** | Not started. |
 
-Verification in place: `neogb_res_selftest` (151 checks, run by `make check`), the
+Verification in place: `neogb_res_selftest` (256 checks, run by `make check`), the
 64 pre-existing diff tests still pass, and a cyclic-8 Gröbner basis is byte-identical
 to the pristine 0.10.1 baseline with no measurable slowdown.
 `test/neogb/res/res_reference.m2` is the Macaulay2 script every reference number in the
@@ -371,12 +373,16 @@ catalecticant cokernel, and a rank-two module with a nonzero degree shift.
 
 The one free choice in the construction is the direction of the storage order
 inside a block, and it is not cosmetic: Schreyer's theorem attaches the lead term
-of an S-pair to the *larger* of the two indices, so putting the small monomials
-first keeps every colon quotient small. Ascending is what Macaulay2 does; the
-descending variant is still a correct frame but a bigger one, resolving
-`(x², xy, y³)` — projective dimension 2 — in three steps as 1,3,3,1 instead of
-1,3,2. `res_test_frame_block_order` is the discriminating test: flipping
-`res_frame_cmp_mono_asc` fails that one check and passes every other frame test.
+of an S-pair to the *larger* of the two indices, so the elements early in a block
+are the ones being divided into, and their colon quotients are what the next level
+is made of. ~~Ascending is what Macaulay2 does.~~ **Corrected in M5:** the order is
+degree ascending and then the ring order **descending**, which is Macaulay2's
+`sort(1, -1)` at level 1 (`res-f4-computation.cpp:132`) and its `PreElementSorter`
+above (`res-schreyer-frame.cpp:32`, comparing varpower monomials, which list
+variables from the highest down). `res_test_frame_block_order` is the discriminating
+test — `(z², y²z, y³)` has the frame 1,3,3,1 descending and 1,3,2 ascending, and
+Macaulay2 says 1,3,3,1. See the M5 notes for how the ascending version was caught.
+The classical `(x², xy, y³)` does *not* discriminate; both directions give 1,3,2.
 
 The subtlest bug found so far, and the reason the rank-two test earns its keep:
 `find_multiplied_reducer` (`symbol.c:493`) **open codes** its divisibility test rather
@@ -421,7 +427,7 @@ where M2 gives 3. `res_reference.m2` checks the thing that is actually true —
 `image ours == image (syz f)` — for every corpus example. When the input generators are
 already a reduced Gröbner basis *and* already minimal syzygy generators, the two agree
 term for term; the Koszul complex and the catalecticant are checked that way.
-Minimalizing is M5's rank extraction, not a patch here.
+Minimalizing is not a patch here, and M5 does not fix it either: rank extraction minimalizes Betti *numbers* without ever building a minimal generating set, so `RES_SYZ_OF_INPUT` still returns the Gröbner basis it always did.
 
 **The exact `d ∘ d = 0` check does not run by default.** It is a polynomial
 multiplication per column and measured at six times the cost of the resolution itself
@@ -443,6 +449,74 @@ guarantees an admissible reducer of index below `up(k)` exists precisely because
 is a minimal generator of the colon ideal, and picking any other one moves the lead
 term off the frame.
 
+### M5 notes
+
+Rank extraction itself is the easy half. The formula holds as written, the blocks are
+small and independent, and the elimination stops at row echelon form — no back
+substitution, since only `rank` is wanted. `res_ech_rank` keeps a dense accumulator over
+the columns and stores pivot rows sparsely in one arena reset per block, so fill-in is
+paid for only where it happens.
+
+**The Hilbert numerator is free.** `K_d = Σ_i (−1)^i frame_{i,d}` and
+`K_d = Σ_i (−1)^i β_{i,d}` are the same number, because the rank corrections telescope,
+so the numerator needs no field arithmetic at all past the Gröbner basis —
+`res_betti_new` fills it in from the frame alone and `export_module_betti` with
+`minimal = 0` never touches a differential. That the two agree is also the sharpest
+cheap check there is on the rank extraction, since it fails the moment a correction
+lands at the wrong level or degree; the selftest recomputes the sum from the minimal
+table and compares it against the one the engine got from the frame.
+
+Krull dimension and degree come out of the numerator by dividing out `(1 − t)`, which
+is a running sum, until the value at 1 is nonzero: `dim = nv − c` and `degree = G(1)`.
+Both are invariant under the degree shift, which only multiplies `K` by a power of `t`.
+
+**The frame's block order was wrong, and M5 is what caught it.** Randomised
+cross-checking against Macaulay2 — twenty ideals, not the hand-picked corpus — turned up
+four whose `poincare` disagreed. The numerator is an alternating sum over the whole
+frame, so disagreeing on it means the frame is not a resolution of the thing it claims
+to resolve, which is a far louder signal than any Betti number. Two separate defects
+were behind it:
+
+1. **The within-block sort ran ascending instead of descending** (above). Every example
+   in the M3 corpus is insensitive to the direction, which is why nine of them agreed
+   with Macaulay2 anyway.
+2. **`max_level = 0` meant `nr_vars`, and `nr_vars` is not enough.** Hilbert's syzygy
+   theorem bounds the *minimal* resolution, not the frame. `(z, y², x²y, x³)` in three
+   variables has the frame 1,4,6,4,1 — Macaulay2 agrees once its own `LengthLimit` is
+   raised past its default of `nv`, which hides the same thing. The ceiling silently
+   truncated the frame and the missing tail is exactly what made the alternating sums
+   come out wrong. `res_frame_t` now grows its level array and `max_level = 0` means no
+   ceiling; `res_frame_is_complete` no longer has an "nv is always enough" escape.
+   The real bound is that the frame is a subcomplex of the Taylor complex on the
+   Gröbner basis, so it stops by `lv[1].ld` levels; that is asserted rather than
+   preallocated, since it is an enormous overestimate.
+
+With both fixed, twenty random ideals in three to six variables agree with Macaulay2 on
+frame ranks, `minimalBetti`, `poincare`, `pdim`, `regularity`, `dim` and `degree`, and
+so do seven hand-picked ones including two modules and a shifted presentation.
+
+**`max_level` builds one level more than it reports.** `β_{i,d}` reads the rank of
+`d_{i+1}` as well as of `d_i`, so a table truncated at level *L* is only exact if level
+*L+1* was built. Macaulay2's `minimalBetti` does the same. Everything that is an
+invariant of the whole module — the numerator, `pdim`, `reg`, `dim`, `degree` — is
+refused outright on a truncated frame rather than reported as a bound.
+
+**Scalars are reported in the caller's own degrees, tables are not.** `betti` and
+`hilbnum` are arrays indexed by degree and have to start at zero, so they keep the
+shift that normalises `row_degs`, with `degshift` reporting it. `reg` has the shift
+added back; `pdim`, `dim` and `degree` do not depend on it. Only regularity can tell
+the difference, and it did — the shifted-presentation cross-check is what found it.
+
+Mutation testing, all against `neogb_res_selftest`: dropping the `rank(d_{i+1})`
+correction fails 10 checks, dropping `rank(d_i)` 13, counting every term instead of
+only the constant ones 8, flipping the sign of the alternating sum 17, flipping the
+block order tie break 4, dropping the degree key from the block order 3, and leaving
+pivot rows un-normalised 1. That last one is the reason
+`res_test_betti_generic_cubics` exists: every smaller example in the file has scalar
+blocks whose pivots happen to be ±1, so the elimination gets the right rank without
+ever dividing, and six random cubics in four variables is the smallest case found that
+does not.
+
 ## Milestones
 
 | # | Deliverable | Validation |
@@ -452,7 +526,7 @@ term off the frame.
 | **M2** | **Module F4** — GB of a submodule of a free module (`get_lcm`, `insert_and_update_spairs`) | Module GBs match M2 `gb` on module input; ideal case still bit-identical |
 | **M3** | Schreyer frame construction (monomial only) + frame Betti table | Frame ranks match M2 `res(…, Strategy => Nonminimal)` |
 | **M4** | Nonminimal differential (degree-by-degree driver) + **single syzygy matrix** output, both `SYZ_OF_GB` and `SYZ_OF_INPUT` | `d ∘ d = 0`; complexes exact in M2; syzygies generate the same module as M2 `syz` |
-| **M5** | Rank extraction → `minimalBetti` equivalent | Betti tables match M2 `minimalBetti` across the corpus |
+| **M5** | Rank extraction → `minimalBetti` equivalent, plus the Hilbert numerator and the invariants that fall out of it | Betti tables match M2 `minimalBetti` across the corpus, and `poincare` / `pdim` / `regularity` / `dim` / `degree` match on randomised input too |
 | **M6** | Multigraded bucketing, then torsion in the degree group | Cross-check against M2 `res` + `betti` on multigraded examples (M2 has no `minimalBetti` here — this is the novel result) |
 | **M7** | Materialize and export the full complex (flat-array C API, `mallocp` convention) | Round-trip into M2; `prune` to minimal and compare |
 | **M8** | LA backend vtable + CPU reference; then CUDA | Identical results across backends; benchmark sweep incl. sparse inputs where LiftTree should win |
@@ -494,7 +568,14 @@ Betti tables are documented.
 differential, and that frame ranks minus the two rank corrections are non-negative.
 `res_diff_verify(rd, 1)` does the first exactly; `res_selftest.c` does it a second and
 independent way, by substituting two points of 𝔽_p^n and multiplying the resulting scalar
-matrices, which shares no code at all with the engine it checks.
+matrices, which shares no code at all with the engine it checks. `res_betti_minimalize`
+does the second, refusing to report a negative entry rather than clamping it.
+
+The Hilbert numerator is a third such check and the cheapest of the three: it is the
+alternating sum of the frame ranks *and* of the minimal Betti numbers, so computing it
+both ways and comparing costs nothing and catches any rank correction that landed at the
+wrong level or degree. It is also the check that caught the frame's block order — see
+the M5 notes.
 
 **Benchmarks.** Include sparse/monomial-flavored inputs where Singular's `fres` (LiftTree)
 is expected to win — knowing where the matrix approach loses is part of the deliverable, and
