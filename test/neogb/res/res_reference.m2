@@ -194,3 +194,63 @@ for I in {ideal(z^2, y^2*z, y^3),
     print("-- " | toString I);
     print betti res(I, Strategy => Nonminimal, LengthLimit => 8);
     );
+
+-- ---------------------------------------------------------------------
+-- A resolution kept alive (M7): res_comp_t, driven from Macaulay2 as an
+-- ordinary ResolutionComputation through rawMsolveResolution and the
+-- existing rawResolutionGetFree / rawResolutionGetMatrix.  This is what
+-- the Msolve package's msolveResolution wraps.
+--
+-- What the C selftest cannot check is what a complex is *for*: that it is
+-- exact, and that it resolves the module it was handed.  That is what
+-- this section is for.  It also exercises the laziness -- the levels are
+-- asked for from the top down, so the driver fills in a prefix it was
+-- never asked for -- and requires that to agree with asking bottom up.
+--
+-- Expect the ranks to be the *frame's*, hence dependent on the Gröbner
+-- basis and so on the module order.  msolve resolves under position over
+-- term and Macaulay2 does not, so the two nonminimal resolutions of one
+-- module can genuinely differ: coker {{x2,y2},{z,0}} with rows in degrees
+-- 0 and 1 comes back 2,2 from msolve and 2,3,1 from Macaulay2, and both
+-- are right -- the module is free of rank two, and the minimal Betti
+-- numbers, 2,2, are what actually agree.
+-- ---------------------------------------------------------------------
+
+needsPackage "Msolve";
+
+reportResolution = (name, M) -> (
+    C := msolveResolution M;
+    n := length C;
+    frees := apply(n+1, i -> C_i);
+    -- top down, which makes the differential driver fill in a prefix
+    diffs := new MutableHashTable;
+    scan(reverse toList (1 .. n), j -> diffs#j = C.dd_j);
+    -- and again bottom up, which must be identical
+    C2 := msolveResolution M;
+    sameUpDown := all(1 .. n, j -> diffs#j == C2.dd_j)
+        and frees == apply(n+1, i -> C2_i);
+    print("-- " | name);
+    print("   ranks        : " | toString apply(frees, numgens));
+    print("   degrees      : " | toString apply(frees, F -> flatten degrees F));
+    print("   d o d = 0    : " | toString all(2 .. n, j -> diffs#(j-1) * diffs#j == 0));
+    print("   exact        : " | toString all(2 .. n, j -> ker diffs#(j-1) == image diffs#j));
+    print("   resolves M   : " | toString (image diffs#1 == image M));
+    print("   order free   : " | toString sameUpDown);
+    print("   M2 nonminimal: " | toString new HashTable from
+        betti res(coker M, Strategy => Nonminimal, LengthLimit => 8));
+    );
+
+use Q;  -- ZZ/p[x,y,z]
+reportResolution("(z, y^2, x^2 y, x^3), whose frame runs past nv",
+    gens ideal(z, y^2, x^2*y, x^3));
+reportResolution("a rank two module with a shifted row",
+    map(Q^{0,-1}, Q^{-2,-2}, {{x^2, y^2}, {z, 0}}));
+
+use R;  -- ZZ/p[x,y,z,w]
+reportResolution("the twisted cubic",
+    gens minors_2 matrix {{x,y,z}, {y,z,w}});
+
+-- LengthLimit truncates the frame, and the differentials below the cut
+-- are the same ones the untruncated computation reports
+Ctr = msolveResolution(ideal(z, y^2, x^2*y, x^3), LengthLimit => 2);
+print("-- truncated at level 2: ranks " | toString apply(1 + length Ctr, i -> numgens Ctr_i));

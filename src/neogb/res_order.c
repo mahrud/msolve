@@ -38,14 +38,114 @@
  * over [1, cpos).  Block elimination orders are rejected at hash table
  * setup time, so there is no second degree slot to skip here. */
 
+/* --------------------------------------------------------------------- *
+ *  Strategies
+ *
+ *  The three axes of res_strat_t, bundled at the C entry points and
+ *  unpacked into ht->mord / ht->mpos and res_frame_t::strat, which is
+ *  where the comparisons read them.  Keeping them as plain int fields
+ *  rather than as a struct on the hash table keeps the F4 hot path the
+ *  shape it has always had.
+ * --------------------------------------------------------------------- */
+
+res_strat_t res_strat_default(
+        void
+        )
+{
+    res_strat_t s;
+
+    s.base = RES_MORD_POT;
+    s.pos  = RES_POS_DOWN;
+    s.lift = RES_LIFT_SCHREYER;
+
+    return s;
+}
+
+res_strat_t res_strat_of_order(
+        const int32_t module_order
+        )
+{
+    res_strat_t s = res_strat_default();
+
+    s.base = module_order;
+
+    return s;
+}
+
+int res_strat_check(
+        const res_strat_t * const s,
+        const int for_resolution
+        )
+{
+    if (s == NULL) {
+        return 0; /* NULL means the default, which is always usable */
+    }
+    if (s->pos != RES_POS_DOWN && s->pos != RES_POS_UP) {
+        fprintf(ERRSTREAM, "Unknown component direction %d; it is "
+                "RES_POS_DOWN or RES_POS_UP.\n", s->pos);
+        return 1;
+    }
+    if (s->lift != RES_LIFT_SCHREYER) {
+        fprintf(ERRSTREAM, "Unknown lift %d; only the Schreyer induced "
+                "order is implemented for the levels above zero.\n",
+                s->lift);
+        return 1;
+    }
+    if (s->base == RES_MORD_SCHREYER) {
+        fprintf(ERRSTREAM, "The Schreyer order as a *base* order needs per "
+                "component base monomials, which only the resolution engine "
+                "can supply, and by then the Gr\u00f6bner basis is already "
+                "in hand.  Note this is a different thing from the Schreyer "
+                "order the levels above zero are lifted into, which is what "
+                "RES_LIFT_SCHREYER means and is always in force.\n");
+        return 1;
+    }
+    if (s->base != RES_MORD_POT && s->base != RES_MORD_TOP) {
+        fprintf(ERRSTREAM, "Unknown base module order %d.\n", s->base);
+        return 1;
+    }
+    (void)for_resolution; /* both bases carry a frame and a differential */
+
+    return 0;
+}
+
+const char *res_strat_name(
+        const res_strat_t * const s
+        )
+{
+    const res_strat_t d = res_strat_default();
+    const res_strat_t * const t = s != NULL ? s : &d;
+
+    if (t->lift != RES_LIFT_SCHREYER) {
+        return "unknown";
+    }
+    switch (t->base) {
+        case RES_MORD_POT:
+            return t->pos == RES_POS_UP ? "pot-up-schreyer"
+                                        : "pot-down-schreyer";
+        case RES_MORD_TOP:
+            return t->pos == RES_POS_UP ? "top-up-schreyer"
+                                        : "top-down-schreyer";
+        default:
+            return "unknown";
+    }
+}
+
+/* The component key, in the direction the strategy asks for.  pos is
+ * ht->mpos, constant for a whole computation, so the branch predicts
+ * perfectly and the comparison still inlines into the sort. */
 static inline int res_cmp_component(
         const exp_t * const ea,
         const exp_t * const eb,
-        const len_t cpos
+        const len_t cpos,
+        const int32_t pos
         )
 {
     if (ea[cpos] == eb[cpos]) {
         return 0;
+    }
+    if (pos == RES_POS_UP) {
+        return ea[cpos] > eb[cpos] ? 1 : -1;
     }
     return ea[cpos] < eb[cpos] ? 1 : -1;
 }
@@ -138,7 +238,7 @@ static inline int res_monomial_cmp_ev(
 
     switch (ht->mord) {
         case RES_MORD_POT:
-            c = res_cmp_component(ea, eb, cpos);
+            c = res_cmp_component(ea, eb, cpos, ht->mpos);
             if (c != 0) {
                 return c;
             }
@@ -150,13 +250,13 @@ static inline int res_monomial_cmp_ev(
             if (c != 0) {
                 return c;
             }
-            return res_cmp_component(ea, eb, cpos);
+            return res_cmp_component(ea, eb, cpos, ht->mpos);
         default: /* RES_MORD_SCHREYER */
             c = res_cmp_terms_schreyer(ea, eb, ht);
             if (c != 0) {
                 return c;
             }
-            return res_cmp_component(ea, eb, cpos);
+            return res_cmp_component(ea, eb, cpos, ht->mpos);
     }
 }
 

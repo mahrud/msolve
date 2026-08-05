@@ -59,6 +59,7 @@ ht_t *initialize_basis_hash_table(
      * and every module code path stays switched off */
     ht->ncomp   = st->ncomp;
     ht->mord    = st->mord;
+    ht->mpos    = st->mpos;
     ht->cbase   = NULL;
     ht->cshift  = NULL;
     /* generate map */
@@ -172,6 +173,7 @@ ht_t *copy_hash_table(
     ht->cpos    = bht->cpos;
     ht->ncomp   = bht->ncomp;
     ht->mord    = bht->mord;
+    ht->mpos    = bht->mpos;
     ht->cbase   = bht->cbase;
     ht->cshift  = bht->cshift;
 
@@ -228,6 +230,7 @@ ht_t *initialize_secondary_hash_table(
     ht->cpos    = bht->cpos;
     ht->ncomp   = bht->ncomp;
     ht->mord    = bht->mord;
+    ht->mpos    = bht->mpos;
     ht->cbase   = bht->cbase;
     ht->cshift  = bht->cshift;
 

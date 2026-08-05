@@ -27,6 +27,25 @@
 #include "../../../src/neogb/res.h"
 #include "../../../src/msolve/streams.h"
 
+/* The entry points take a res_strat_t now rather than a bare res_mord_t.
+ * Most of these tests care only about the base order, so this wraps one
+ * up with the default position and lift.  The small rotating pool lets
+ * two of them appear in one expression. */
+static const res_strat_t *res_strat_p(
+        const int32_t mord
+        )
+{
+    static res_strat_t pool[4];
+    static int next = 0;
+
+    res_strat_t *s = pool + next;
+    next = (next + 1) & 3;
+    *s = res_strat_of_order(mord);
+
+    return s;
+}
+
+
 static int res_st_fail;
 static int res_st_run;
 static int res_st_verbose;
@@ -263,7 +282,7 @@ static void res_test_module_gb_rank_one(
     const int64_t mterms = export_module_f4(malloc,
             &mbld, &mblen, &mbexp, &mbcomp, &mbcf,
             lens, exps, comps, cfs_b, NULL /* row degrees */,
-            fc, 0 /* drl */, module_order,
+            fc, 0 /* drl */, res_strat_p(module_order),
             3 /* nvars */, 1 /* nrows */, 3 /* ngens */,
             12 /* ht size */, 1 /* threads */, 0 /* max pairs */,
             2 /* la */, 1 /* reduce */, 0 /* info */);
@@ -327,7 +346,7 @@ static void res_test_module_gb_split_components(
     const int64_t nterms = export_module_f4(malloc,
             &bld, &blen, &bexp, &bcomp, &bcf,
             lens, exps, comps, cfs, NULL,
-            fc, 0, RES_MORD_POT,
+            fc, 0, res_strat_p(RES_MORD_POT),
             3 /* nvars */, 2 /* nrows */, 3 /* ngens */,
             12, 1, 0, 2, 1, 0);
 
@@ -371,7 +390,7 @@ static void res_test_module_gb_rank_two(
     const int64_t nterms = export_module_f4(malloc,
             &bld, &blen, &bexp, &bcomp, &bcf,
             lens, exps, comps, cfs, NULL,
-            fc, 0, RES_MORD_POT,
+            fc, 0, res_strat_p(RES_MORD_POT),
             3 /* nvars */, 2 /* nrows */, 2 /* ngens */,
             12, 1, 0, 2, 1, 0);
 
@@ -463,7 +482,7 @@ static void res_test_classical_resolutions(
     const int64_t tc_nterms = export_module_f4(malloc,
             &tc_bld, &tc_blen, &tc_bexp, &tc_bcomp, &tc_bcf,
             tc_lens, tc_exps, tc_comps, tc_cfs, tc_row_degs,
-            fc, 0, RES_MORD_POT, 4, 1, 3, 12, 1, 0, 2, 1, 0);
+            fc, 0, res_strat_p(RES_MORD_POT), 4, 1, 3, 12, 1, 0, 2, 1, 0);
 
     const int tc_shape_ok = tc_bld == 3 && tc_nterms == 6
         && tc_blen != NULL && tc_bexp != NULL
@@ -506,7 +525,7 @@ static void res_test_classical_resolutions(
     const int64_t hb_nterms = export_module_f4(malloc,
             &hb_bld, &hb_blen, &hb_bexp, &hb_bcomp, &hb_bcf,
             hb_lens, hb_exps, hb_comps, hb_cfs, hb_row_degs,
-            fc, 0, RES_MORD_POT, 4, 3, 2, 12, 1, 0, 2, 1, 0);
+            fc, 0, res_strat_p(RES_MORD_POT), 4, 3, 2, 12, 1, 0, 2, 1, 0);
 
     const int hb_shape_ok = hb_bld == 3 && hb_nterms == 10
         && hb_blen != NULL && hb_bexp != NULL
@@ -553,7 +572,7 @@ static void res_test_classical_resolutions(
     const int64_t cat_nterms = export_module_f4(malloc,
             &cat_bld, &cat_blen, &cat_bexp, &cat_bcomp, &cat_bcf,
             cat_lens, cat_exps, cat_comps, cat_cfs, cat_row_degs,
-            fc, 0, RES_MORD_POT, 4, 2, 3, 12, 1, 0, 2, 1, 0);
+            fc, 0, res_strat_p(RES_MORD_POT), 4, 2, 3, 12, 1, 0, 2, 1, 0);
 
     const int cat_shape_ok = cat_bld == 6 && cat_nterms == 12
         && cat_blen != NULL && cat_bexp != NULL
@@ -606,7 +625,7 @@ static void res_test_module_gb_rejects_bad_input(
                 "res_selftest: three module input errors are expected next\n");
     }
     RES_CHECK(export_module_f4(malloc, &bld, &blen, &bexp, &bcomp, &bcf,
-                lens, exps, bad_comps, cfs, NULL, 32003, 0, RES_MORD_POT,
+                lens, exps, bad_comps, cfs, NULL, 32003, 0, res_strat_p(RES_MORD_POT),
                 3, 2, 1, 12, 1, 0, 2, 1, 0) == 0,
             "an out of range component is rejected");
     RES_CHECK(blen == NULL && bexp == NULL && bcomp == NULL && bcf == NULL,
@@ -614,12 +633,13 @@ static void res_test_module_gb_rejects_bad_input(
 
     RES_CHECK(export_module_f4(malloc, &bld, &blen, &bexp, &bcomp, &bcf,
                 lens, exps, ok_comps, cfs, NULL, 32003, 0,
-                RES_MORD_SCHREYER, 3, 2, 1, 12, 1, 0, 2, 1, 0) == 0,
-            "the Schreyer order is refused at this entry point");
+                res_strat_p(RES_MORD_SCHREYER),
+                3, 2, 1, 12, 1, 0, 2, 1, 0) == 0,
+            "the Schreyer order is refused as a *base* order");
 
     RES_CHECK(export_module_f4(malloc, &bld, &blen, &bexp, &bcomp, &bcf,
                 lens, exps, ok_comps, cfs, NULL, 0 /* char 0 */, 0,
-                RES_MORD_POT, 3, 2, 1, 12, 1, 0, 2, 1, 0) == 0,
+                res_strat_p(RES_MORD_POT), 3, 2, 1, 12, 1, 0, 2, 1, 0) == 0,
             "characteristic zero is refused");
 }
 
@@ -663,7 +683,7 @@ static void res_check_frame(
     int32_t nlv = 0, maxdeg = 0, *betti = NULL;
     const int64_t nelts = export_module_frame(malloc, &nlv, &maxdeg, &betti,
             lens, exps, comps, cfs, row_degs, 32003, 0 /* drl */,
-            RES_MORD_POT, nv, nrows, ngens, max_level,
+            res_strat_p(RES_MORD_POT), nv, nrows, ngens, max_level,
             12 /* ht size */, 1 /* threads */, 0 /* max pairs */,
             2 /* la */, 0 /* info */);
 
@@ -936,15 +956,16 @@ static void res_test_frame_rejects_bad_input(
                 "res_selftest: two frame input errors are expected next\n");
     }
     RES_CHECK(export_module_frame(malloc, &nlv, &maxdeg, &betti,
-                lens, exps, comps, cfs, NULL, 32003, 0, RES_MORD_SCHREYER,
+                lens, exps, comps, cfs, NULL, 32003, 0,
+                res_strat_p(RES_MORD_SCHREYER),
                 3, 1, 1, 0, 12, 1, 0, 2, 0) == 0,
-            "the Schreyer order is refused as an input order to the frame");
+            "the Schreyer order is refused as a base order by the frame");
     RES_CHECK(betti == NULL && nlv == 0,
             "a rejected frame call allocates nothing");
 
     RES_CHECK(export_module_frame(malloc, &nlv, &maxdeg, &betti,
                 lens, exps, comps, cfs, NULL, 0 /* char 0 */, 0,
-                RES_MORD_POT, 3, 1, 1, 0, 12, 1, 0, 2, 0) == 0,
+                res_strat_p(RES_MORD_POT), 3, 1, 1, 0, 12, 1, 0, 2, 0) == 0,
             "characteristic zero is refused by the frame");
 }
 
@@ -959,7 +980,7 @@ static void res_test_frame_rejects_exponent_overflow(
     int32_t nlv = 0, maxdeg = 0, *betti = NULL;
 
     RES_CHECK(export_module_frame(malloc, &nlv, &maxdeg, &betti,
-                lens, exps, comps, cfs, NULL, 32003, 0, RES_MORD_POT,
+                lens, exps, comps, cfs, NULL, 32003, 0, res_strat_p(RES_MORD_POT),
                 2, 1, 2, 0, 12, 1, 0, 2, 0) == 0,
             "a lifted monomial exceeding the exponent representation is refused");
     RES_CHECK(betti == NULL && nlv == 0,
@@ -1004,7 +1025,7 @@ static int64_t res_run_resolution(
         const int32_t ngens,
         const int32_t max_level,
         const int32_t syz_of,
-        const int32_t module_order
+        const res_strat_t * const strat
         )
 {
     int32_t i, nt = 0;
@@ -1020,7 +1041,7 @@ static int64_t res_run_resolution(
     r->nterms = export_module_resolution(malloc, &r->nlv, &r->ranks,
             &r->degs, &r->dlen, &r->dexp, &r->dcomp, &cf,
             lens, exps, comps, r->cfs, row_degs, RES_FC, 0 /* drl */,
-            module_order, nv, nrows, ngens, max_level, syz_of,
+            strat, nv, nrows, ngens, max_level, syz_of,
             1 /* verify d o d = 0 exactly */,
             12 /* ht size */, 1 /* threads */, 0 /* max pairs */,
             2 /* la */, 0 /* info */);
@@ -1138,7 +1159,7 @@ static void res_check_resolution(
     res_res_t r;
 
     const int64_t n = res_run_resolution(&r, lens, exps, comps, cfs,
-            row_degs, nv, nrows, ngens, max_level, syz_of, RES_MORD_POT);
+            row_degs, nv, nrows, ngens, max_level, syz_of, res_strat_p(RES_MORD_POT));
 
     int32_t nlv = 0;
     while (ranks[nlv] >= 0) {
@@ -1272,7 +1293,7 @@ static void res_test_resolution_koszul(
 
     res_res_t r;
     res_run_resolution(&r, lens, exps, comps, cfs, NULL,
-            3, 1, 3, 0, RES_SYZ_OF_GB, RES_MORD_POT);
+            3, 1, 3, 0, RES_SYZ_OF_GB, res_strat_p(RES_MORD_POT));
     if (r.nterms == 12 && r.nlv == 4) {
         res_check_differential("the Koszul differential matches its "
                 "reference entry for entry", &r, 3, rlen, rexp, rcomp, rcf);
@@ -1323,7 +1344,7 @@ static void res_test_resolution_twisted_cubic(
 
     res_res_t r;
     res_run_resolution(&r, lens, exps, comps, cfs, NULL,
-            4, 1, 3, 0, RES_SYZ_OF_GB, RES_MORD_POT);
+            4, 1, 3, 0, RES_SYZ_OF_GB, res_strat_p(RES_MORD_POT));
     if (r.nterms == 12 && r.nlv == 3) {
         res_check_differential("the twisted cubic differential is its "
                 "Hilbert-Burch matrix", &r, 4, rlen, rexp, rcomp, rcf);
@@ -1456,12 +1477,12 @@ static void res_test_resolution_matches_frame(
 
     int32_t nlv = 0, maxdeg = 0, *betti = NULL;
     export_module_frame(malloc, &nlv, &maxdeg, &betti,
-            lens, exps, comps, cfs, NULL, RES_FC, 0, RES_MORD_POT,
+            lens, exps, comps, cfs, NULL, RES_FC, 0, res_strat_p(RES_MORD_POT),
             3, 1, 3, 0, 12, 1, 0, 2, 0);
 
     res_res_t r;
     res_run_resolution(&r, lens, exps, comps, cfs_src, NULL,
-            3, 1, 3, 0, RES_SYZ_OF_GB, RES_MORD_POT);
+            3, 1, 3, 0, RES_SYZ_OF_GB, res_strat_p(RES_MORD_POT));
 
     int ok = betti != NULL && r.nterms > 0 && r.nlv == nlv;
     int32_t i, d, off = 0;
@@ -1525,7 +1546,7 @@ static void res_test_syz_of_input_koszul(
 
     res_res_t r;
     res_run_resolution(&r, lens, exps, comps, cfs, NULL,
-            3, 1, 3, 2, RES_SYZ_OF_INPUT, RES_MORD_POT);
+            3, 1, 3, 2, RES_SYZ_OF_INPUT, res_strat_p(RES_MORD_POT));
     if (r.nterms == 9 && r.nlv == 3) {
         res_check_differential("the Koszul syzygy matrix matches its "
                 "reference entry for entry", &r, 3, rlen, rexp, rcomp, rcf);
@@ -1573,7 +1594,7 @@ static void res_test_syz_of_input_catalecticant(
 
     res_res_t r;
     res_run_resolution(&r, lens, exps, comps, cfs, rd,
-            4, 2, 3, 2, RES_SYZ_OF_INPUT, RES_MORD_POT);
+            4, 2, 3, 2, RES_SYZ_OF_INPUT, res_strat_p(RES_MORD_POT));
     if (r.nterms == 12 && r.nlv == 3) {
         res_check_differential("the catalecticant syzygy is the vector of "
                 "signed maximal minors", &r, 4, rlen, rexp, rcomp, rcf);
@@ -1641,34 +1662,34 @@ static void res_test_resolution_rejects_bad_input(
     }
 
     RES_CHECK(res_run_resolution(&r, lens, exps, comps, cfs, NULL,
-                3, 1, 3, 0, RES_SYZ_OF_GB, RES_MORD_TOP) == 0,
-            "term over position is refused by the resolution");
+                3, 1, 3, 0, RES_SYZ_OF_GB, res_strat_p(RES_MORD_SCHREYER)) == 0,
+            "the Schreyer order is refused as a base by the resolution");
     RES_CHECK(r.ranks == NULL && r.dlen == NULL && r.dcf == NULL,
             "a rejected resolution allocates nothing");
     res_free_resolution(&r);
 
     RES_CHECK(res_run_resolution(&r, lens, exps, comps, cfs, NULL,
-                3, 1, 3, 3, RES_SYZ_OF_INPUT, RES_MORD_POT) == 0,
+                3, 1, 3, 3, RES_SYZ_OF_INPUT, res_strat_p(RES_MORD_POT)) == 0,
             "syzygies of the input do not resolve past level 2");
     res_free_resolution(&r);
 
     RES_CHECK(res_run_resolution(&r, ilens, iexps, icomps, icfs, NULL,
-                3, 1, 1, 0, RES_SYZ_OF_GB, RES_MORD_POT) == 0,
+                3, 1, 1, 0, RES_SYZ_OF_GB, res_strat_p(RES_MORD_POT)) == 0,
             "an inhomogeneous ideal has no graded resolution");
     res_free_resolution(&r);
 
     RES_CHECK(res_run_resolution(&r, ilens, iexps, icomps, icfs, NULL,
-                3, 1, 1, 2, RES_SYZ_OF_INPUT, RES_MORD_POT) == 0,
+                3, 1, 1, 2, RES_SYZ_OF_INPUT, res_strat_p(RES_MORD_POT)) == 0,
             "an inhomogeneous ideal has no graded syzygy matrix either");
     res_free_resolution(&r);
 
     RES_CHECK(res_run_resolution(&r, xlens, xexps, xcomps, xcfs, NULL,
-                1, 1, 1, 0, RES_SYZ_OF_GB, RES_MORD_POT) == 0,
+                1, 1, 1, 0, RES_SYZ_OF_GB, res_strat_p(RES_MORD_POT)) == 0,
             "an exponent outside the hash table range is refused");
     res_free_resolution(&r);
 
     RES_CHECK(res_run_resolution(&r, xlens, xcomps, xcomps, xcfs, xrows,
-                1, 2, 1, 0, RES_SYZ_OF_GB, RES_MORD_POT) == 0,
+                1, 2, 1, 0, RES_SYZ_OF_GB, res_strat_p(RES_MORD_POT)) == 0,
             "row shifts outside the hash table range are refused");
     res_free_resolution(&r);
 }
@@ -1722,7 +1743,7 @@ static void res_check_betti(
     const int64_t nelts = export_module_betti(malloc, &nlv, &maxdeg, &shift,
             &tab, &num, &pdim, &reg, &dim, &deg,
             lens, exps, comps, cfs, row_degs, 32003, 0 /* drl */,
-            RES_MORD_POT, nv, nrows, ngens, 0 /* full */, 1 /* minimal */,
+            res_strat_p(RES_MORD_POT), nv, nrows, ngens, 0 /* full */, 1 /* minimal */,
             1 /* verify */, 12, 1, 0, 2, 0);
 
     RES_CHECK(nelts > 0 && tab != NULL && num != NULL, what);
@@ -1784,7 +1805,7 @@ static void res_check_betti(
     memcpy(cfs, cfs_src, (unsigned long)nterms * sizeof(int32_t));
     const int64_t fnelts = export_module_betti(malloc, &fnlv, &fmaxdeg, NULL,
             &ftab, &fnum, NULL, NULL, NULL, NULL,
-            lens, exps, comps, cfs, row_degs, 32003, 0, RES_MORD_POT,
+            lens, exps, comps, cfs, row_degs, 32003, 0, res_strat_p(RES_MORD_POT),
             nv, nrows, ngens, 0, 0 /* frame only */, 0, 12, 1, 0, 2, 0);
 
     RES_CHECK(fnelts == nelts && fnlv == nlv && fmaxdeg == maxdeg
@@ -1952,7 +1973,7 @@ static void res_test_betti_row_degrees(
     int32_t c2[4] = {1, 1, 1, 1};
     const int64_t n = export_module_betti(malloc, &nlv, &maxdeg, &shift,
             &tab, NULL, &pdim, &reg, &dim, &deg,
-            lens, exps, comps, c2, sd, 32003, 0, RES_MORD_POT,
+            lens, exps, comps, c2, sd, 32003, 0, res_strat_p(RES_MORD_POT),
             4, 2, 2, 0, 1, 1, 12, 1, 0, 2, 0);
 
     RES_CHECK(n > 0 && tab != NULL && shift == 5,
@@ -2058,7 +2079,7 @@ static void res_test_betti_truncation(
     int32_t c1[3] = {1, 1, 1};
     const int64_t n = export_module_betti(malloc, &nlv, &maxdeg, NULL,
             &tab, NULL, NULL, NULL, NULL, NULL,
-            lens, exps, comps, c1, NULL, 32003, 0, RES_MORD_POT,
+            lens, exps, comps, c1, NULL, 32003, 0, res_strat_p(RES_MORD_POT),
             3, 1, 3, 2 /* truncate */, 1, 1, 12, 1, 0, 2, 0);
 
     /* The frame is built to level three so that beta_2 knows about d_3,
@@ -2078,16 +2099,597 @@ static void res_test_betti_truncation(
     }
     RES_CHECK(export_module_betti(malloc, &nlv, &maxdeg, NULL,
                 &tab, &num, NULL, NULL, NULL, NULL,
-                lens, exps, comps, cfs, NULL, 32003, 0, RES_MORD_POT,
+                lens, exps, comps, cfs, NULL, 32003, 0, res_strat_p(RES_MORD_POT),
                 3, 1, 3, 2, 1, 1, 12, 1, 0, 2, 0) == 0,
             "a truncated resolution has no Hilbert numerator");
     RES_CHECK(tab == NULL && num == NULL,
             "a rejected Betti call allocates nothing");
     RES_CHECK(export_module_betti(malloc, &nlv, &maxdeg, NULL,
                 &tab, NULL, NULL, NULL, NULL, NULL,
-                lens, exps, comps, cfs, NULL, 32003, 0, RES_MORD_TOP,
+                lens, exps, comps, cfs, NULL, 32003, 0,
+                res_strat_p(RES_MORD_SCHREYER),
                 3, 1, 3, 0, 1, 1, 12, 1, 0, 2, 0) == 0,
-            "term over position is refused by the Betti table too");
+            "the Schreyer order is refused as a base by the Betti table");
+}
+
+/* --------------------------------------------------------------------- *
+ *  A resolution kept alive
+ *
+ *  The handle has to be indistinguishable from the one shot entry point:
+ *  same ranks, same degrees in the same storage order, and the same
+ *  differential term for term.  What makes it worth its own tests is the
+ *  laziness -- asking for level i computes levels 2 to i, so asking for
+ *  the levels in descending order makes the driver fill in a prefix it
+ *  was never asked for, and asking twice must change nothing.
+ * --------------------------------------------------------------------- */
+
+static void res_check_comp(
+        const char *what,
+        const int32_t *lens,
+        const int32_t *exps,
+        const int32_t *comps,
+        const int32_t *cfs_src,
+        const int32_t *row_degs,
+        const int32_t nv,
+        const int32_t nrows,
+        const int32_t ngens,
+        const int32_t max_level,
+        const int descending
+        )
+{
+    int32_t i, k, lev;
+    int64_t t;
+    res_res_t r;
+
+    const int64_t n = res_run_resolution(&r, lens, exps, comps, cfs_src,
+            row_degs, nv, nrows, ngens, max_level, RES_SYZ_OF_GB,
+            res_strat_p(RES_MORD_POT));
+    if (n <= 0) {
+        RES_CHECK(0, what);
+        res_free_resolution(&r);
+        return;
+    }
+
+    int32_t nt = 0;
+    for (i = 0; i < ngens; ++i) {
+        nt += lens[i];
+    }
+    int32_t *cfs = (int32_t *)malloc((unsigned long)nt * sizeof(int32_t));
+    memcpy(cfs, cfs_src, (unsigned long)nt * sizeof(int32_t));
+
+    res_comp_t *c = res_comp_new(lens, exps, comps, cfs, row_degs, RES_FC,
+            0 /* drl */, res_strat_p(RES_MORD_POT), nv, nrows, ngens, max_level,
+            12 /* ht size */, 1 /* threads */, 0 /* max pairs */,
+            2 /* la */, 0 /* info */);
+
+    RES_CHECK(c != NULL && res_comp_nlevels(c) == r.nlv, what);
+    if (c == NULL || res_comp_nlevels(c) != r.nlv) {
+        res_comp_free(&c);
+        free(cfs);
+        res_free_resolution(&r);
+        return;
+    }
+
+    /* the shape of the resolution, with no differential computed at all */
+    int ok = 1, okd = 1;
+    int32_t off = 0;
+    for (i = 0; i < r.nlv; ++i) {
+        if (res_comp_rank(c, i) != r.ranks[i]) {
+            ok = 0;
+            break;
+        }
+        int32_t *dg = (int32_t *)malloc(
+                (unsigned long)(r.ranks[i] > 0 ? r.ranks[i] : 1)
+                * sizeof(int32_t));
+        if (res_comp_degrees(c, i, dg)) {
+            okd = 0;
+        }
+        for (k = 0; k < r.ranks[i]; ++k) {
+            if (dg[k] != r.degs[off+k]) {
+                okd = 0;
+            }
+        }
+        off += r.ranks[i];
+        free(dg);
+    }
+    RES_CHECK(ok, "the free modules of the handle have the frame's ranks");
+    RES_CHECK(okd, "the free modules of the handle have the frame's degrees, "
+            "in the frame's own storage order");
+    RES_CHECK(res_comp_rank(c, -1) == -1 && res_comp_rank(c, r.nlv) == -1,
+            "a level outside the resolution has no free module");
+
+    /* offsets of each level in the one shot entry point's flat arrays */
+    int64_t *coff = (int64_t *)calloc((unsigned long)r.nlv + 1,
+            sizeof(int64_t));
+    int64_t *toff = (int64_t *)calloc((unsigned long)r.nlv + 1,
+            sizeof(int64_t));
+    for (i = 1; i < r.nlv; ++i) {
+        coff[i+1] = coff[i] + r.ranks[i];
+        toff[i+1] = toff[i];
+        for (k = 0; k < r.ranks[i]; ++k) {
+            toff[i+1] += r.dlen[coff[i] + k];
+        }
+    }
+
+    int okt = 1;
+    for (i = 1; i < r.nlv; ++i) {
+        lev = descending ? r.nlv - i : i;
+
+        int32_t *dlen = NULL, *dexp = NULL, *dcomp = NULL;
+        void *dcf = NULL;
+        const int64_t nterms = res_comp_differential(malloc, c, lev,
+                &dlen, &dexp, &dcomp, &dcf);
+        const int32_t *cf = (const int32_t *)dcf;
+
+        if (nterms != toff[lev+1] - toff[lev] || dlen == NULL
+                || dexp == NULL || dcomp == NULL || cf == NULL) {
+            okt = 0;
+        } else {
+            for (k = 0; k < r.ranks[lev]; ++k) {
+                if (dlen[k] != r.dlen[coff[lev] + k]) {
+                    okt = 0;
+                }
+            }
+            for (t = 0; t < nterms; ++t) {
+                if (dcomp[t] != r.dcomp[toff[lev] + t]
+                        || cf[t] != r.dcf[toff[lev] + t]) {
+                    okt = 0;
+                }
+            }
+            for (t = 0; t < nterms * nv; ++t) {
+                if (dexp[t] != r.dexp[toff[lev] * nv + t]) {
+                    okt = 0;
+                }
+            }
+        }
+        free_module_differential_data(free, &dlen, &dexp, &dcomp, &dcf);
+        RES_CHECK(dlen == NULL && dexp == NULL && dcomp == NULL
+                && dcf == NULL, "releasing a differential clears the "
+                "caller's pointers");
+    }
+    RES_CHECK(okt, descending
+            ? "every differential matches the one shot entry point term for "
+              "term, asked for from the top down"
+            : "every differential matches the one shot entry point term for "
+              "term");
+
+    /* asking again for one already computed changes nothing */
+    if (r.nlv > 1) {
+        int32_t *dlen = NULL, *dexp = NULL, *dcomp = NULL;
+        void *dcf = NULL;
+        const int64_t again = res_comp_differential(malloc, c, 1,
+                &dlen, &dexp, &dcomp, &dcf);
+        int oka = again == toff[2] - toff[1];
+        for (t = 0; t < again && oka; ++t) {
+            if (dcomp[t] != r.dcomp[t]
+                    || ((const int32_t *)dcf)[t] != r.dcf[t]) {
+                oka = 0;
+            }
+        }
+        RES_CHECK(oka, "asking twice for the same differential gives the "
+                "same answer");
+        free_module_differential_data(free, &dlen, &dexp, &dcomp, &dcf);
+    }
+
+    RES_CHECK(res_comp_differential(malloc, c, 0, NULL, NULL, NULL, NULL)
+            == 0, "there is no differential at level zero");
+
+    free(coff);
+    free(toff);
+    res_comp_free(&c);
+    RES_CHECK(c == NULL, "releasing the handle clears the caller's pointer");
+    free(cfs);
+    res_free_resolution(&r);
+}
+
+static void res_test_comp_koszul(
+        void
+        )
+{
+    const int32_t lens[3]  = {1, 1, 1};
+    const int32_t exps[9]  = {1,0,0,  0,1,0,  0,0,1};
+    const int32_t cfs[3]   = {1, 1, 1};
+    const int32_t comps[3] = {1, 1, 1};
+
+    res_check_comp("the handle resolves the Koszul complex",
+            lens, exps, comps, cfs, NULL, 3, 1, 3, 0, 0);
+    res_check_comp("the Koszul complex, from the top down",
+            lens, exps, comps, cfs, NULL, 3, 1, 3, 0, 1);
+}
+
+static void res_test_comp_twisted_cubic(
+        void
+        )
+{
+    /* y^2-xz, yz-xw, z^2-yw in x,y,z,w */
+    const int32_t lens[3]   = {2, 2, 2};
+    const int32_t exps[24]  = {
+        0,2,0,0,  1,0,1,0,
+        0,1,1,0,  1,0,0,1,
+        0,0,2,0,  0,1,0,1};
+    const int32_t cfs[6]    = {1, RES_FC-1, 1, RES_FC-1, 1, RES_FC-1};
+    const int32_t comps[6]  = {1, 1, 1, 1, 1, 1};
+
+    res_check_comp("the handle resolves the twisted cubic",
+            lens, exps, comps, cfs, NULL, 4, 1, 3, 0, 0);
+    res_check_comp("the twisted cubic, from the top down",
+            lens, exps, comps, cfs, NULL, 4, 1, 3, 0, 1);
+}
+
+/* A frame strictly larger than the minimal resolution, so the levels
+ * really do have work to do, and one that runs past nv. */
+static void res_test_comp_nonminimal(
+        void
+        )
+{
+    /* z, y^2, x^2 y, x^3 in x,y,z: the frame is 1,4,6,4,1 */
+    const int32_t lens[4]   = {1, 1, 1, 1};
+    const int32_t exps[12]  = {0,0,1,  0,2,0,  2,1,0,  3,0,0};
+    const int32_t cfs[4]    = {1, 1, 1, 1};
+    const int32_t comps[4]  = {1, 1, 1, 1};
+
+    res_check_comp("the handle resolves a frame that runs past nv",
+            lens, exps, comps, cfs, NULL, 3, 1, 4, 0, 0);
+    res_check_comp("a frame that runs past nv, from the top down",
+            lens, exps, comps, cfs, NULL, 3, 1, 4, 0, 1);
+}
+
+static void res_test_comp_module(
+        void
+        )
+{
+    /* coker {{x2,y2},{z,w}}: a rank two ambient free module that is
+     * homogeneous only because the second row sits in degree one, so
+     * components and row degrees both have to reach the handle */
+    const int32_t lens[2]   = {2, 2};
+    const int32_t exps[16]  = {
+        2,0,0,0,  0,0,1,0,
+        0,2,0,0,  0,0,0,1};
+    const int32_t cfs[4]    = {1, 1, 1, 1};
+    const int32_t comps[4]  = {1, 2, 1, 2};
+    const int32_t rd[2]     = {0, 1};
+
+    res_check_comp("the handle resolves a shifted rank two module",
+            lens, exps, comps, cfs, rd, 4, 2, 2, 0, 0);
+    res_check_comp("a shifted rank two module, from the top down",
+            lens, exps, comps, cfs, rd, 4, 2, 2, 0, 1);
+}
+
+static void res_test_comp_degshift_and_truncation(
+        void
+        )
+{
+    /* the catalecticant cokernel, whose frame is 2,6,5,1, with every row
+     * degree pushed up by three so that the normalization has something
+     * to report */
+    const int32_t lens[3]  = {2, 2, 2};
+    const int32_t exps[24] = {
+        1,0,0,0,  0,1,0,0,
+        0,1,0,0,  0,0,1,0,
+        0,0,1,0,  0,0,0,1};
+    int32_t cfs[6]         = {1, 1, 1, 1, 1, 1};
+    const int32_t comps[6] = {1, 2, 1, 2, 1, 2};
+    const int32_t rd[2]    = {3, 3};
+
+    res_comp_t *c = res_comp_new(lens, exps, comps, cfs, rd, RES_FC, 0,
+            res_strat_p(RES_MORD_POT), 4, 2, 3, 0, 12, 1, 0, 2, 0);
+    RES_CHECK(c != NULL, "the handle takes shifted row degrees");
+    if (c == NULL) {
+        return;
+    }
+    RES_CHECK(res_comp_degshift(c) == 3,
+            "the handle reports the shift it normalized the row degrees by");
+    RES_CHECK(res_comp_is_complete(c),
+            "a frame with no ceiling on it ends on its own");
+    const int32_t full = res_comp_nlevels(c);
+    RES_CHECK(full == 4 && res_comp_rank(c, 1) == 6,
+            "the handle's frame is the catalecticant's 2,6,5,1");
+    res_comp_free(&c);
+
+    /* the same input, cut off */
+    int32_t cfs2[6] = {1, 1, 1, 1, 1, 1};
+    c = res_comp_new(lens, exps, comps, cfs2, rd, RES_FC, 0, res_strat_p(RES_MORD_POT),
+            4, 2, 3, 2, 12, 1, 0, 2, 0);
+    RES_CHECK(c != NULL && res_comp_nlevels(c) == 3,
+            "max_level truncates the handle's frame");
+    RES_CHECK(c != NULL && full > 3 && !res_comp_is_complete(c),
+            "a cut off frame does not report itself as complete");
+    if (c != NULL) {
+        int32_t *dlen = NULL, *dexp = NULL, *dcomp = NULL;
+        void *dcf = NULL;
+        RES_CHECK(res_comp_differential(malloc, c, 2, &dlen, &dexp,
+                    &dcomp, &dcf) > 0,
+                "the top level of a truncated handle still differentiates");
+        free_module_differential_data(free, &dlen, &dexp, &dcomp, &dcf);
+        RES_CHECK(res_comp_differential(malloc, c, 3, &dlen, &dexp,
+                    &dcomp, &dcf) == 0,
+                "past the truncation there is no differential to ask for");
+        RES_CHECK(dlen == NULL && dcf == NULL,
+                "a refused differential allocates nothing");
+    }
+    res_comp_free(&c);
+}
+
+static void res_test_comp_rejects_bad_input(
+        void
+        )
+{
+    int32_t cfs[3]         = {1, 1, 1};
+    const int32_t lens[3]  = {1, 1, 1};
+    const int32_t exps[9]  = {1,0,0,  0,1,0,  0,0,1};
+    const int32_t comps[3] = {1, 1, 1};
+
+    RES_CHECK(res_comp_new(lens, exps, comps, cfs, NULL, RES_FC, 0,
+                res_strat_p(RES_MORD_SCHREYER),
+                3, 1, 3, 0, 12, 1, 0, 2, 0) == NULL,
+            "the handle refuses the Schreyer order as a base");
+    res_strat_t bad = res_strat_default();
+    bad.pos = 42;
+    RES_CHECK(res_comp_new(lens, exps, comps, cfs, NULL, RES_FC, 0,
+                &bad, 3, 1, 3, 0, 12, 1, 0, 2, 0) == NULL,
+            "the handle refuses an unknown component direction");
+    bad = res_strat_default();
+    bad.lift = 42;
+    RES_CHECK(res_comp_new(lens, exps, comps, cfs, NULL, RES_FC, 0,
+                &bad, 3, 1, 3, 0, 12, 1, 0, 2, 0) == NULL,
+            "the handle refuses an unknown lift");
+    RES_CHECK(res_comp_new(lens, exps, comps, cfs, NULL, RES_FC, 0,
+                res_strat_p(RES_MORD_POT), 3, 1, 3, -1, 12, 1, 0, 2, 0) == NULL,
+            "the handle refuses a negative truncation level");
+
+    /* x + y^2 is not homogeneous, so it has no graded resolution */
+    int32_t icfs[2]         = {1, 1};
+    const int32_t ilens[1]  = {2};
+    const int32_t iexps[6]  = {1,0,0,  0,2,0};
+    const int32_t icomps[2] = {1, 1};
+    RES_CHECK(res_comp_new(ilens, iexps, icomps, icfs, NULL, RES_FC, 0,
+                res_strat_p(RES_MORD_POT), 3, 1, 1, 0, 12, 1, 0, 2, 0) == NULL,
+            "the handle refuses inhomogeneous input");
+
+    res_comp_t *nc = NULL;
+    res_comp_free(&nc);
+    RES_CHECK(res_comp_nlevels(NULL) == 0 && res_comp_rank(NULL, 0) == -1
+            && res_comp_degrees(NULL, 0, NULL) != 0,
+            "every query of a null handle is answered rather than crashing");
+}
+
+/* --------------------------------------------------------------------- *
+ *  Strategies
+ *
+ *  The order the resolution runs in is a parameter, and the four bases
+ *  and directions produce genuinely different Gröbner bases, frames and
+ *  differentials -- the whole point of making it a parameter.  What they
+ *  must *not* change is anything that is an invariant of the module, and
+ *  that is what these tests pin down:
+ *
+ *    - the minimal Betti numbers, entry for entry;
+ *    - the Hilbert numerator, which is the alternating sum of the frame
+ *      ranks under every strategy even though the ranks themselves are
+ *      not equal;
+ *    - projective dimension, regularity, Krull dimension and degree.
+ *
+ *  Anything wrong with a comparator shows up here immediately, because a
+ *  broken order gives a Gröbner basis that is not one and the ranks stop
+ *  telescoping.  d o d = 0 is checked exactly for every strategy too, on
+ *  the resolution rather than the table.
+ * --------------------------------------------------------------------- */
+
+static const res_strat_t res_strat_matrix[4] = {
+    {RES_MORD_POT, RES_POS_DOWN, RES_LIFT_SCHREYER},
+    {RES_MORD_POT, RES_POS_UP,   RES_LIFT_SCHREYER},
+    {RES_MORD_TOP, RES_POS_DOWN, RES_LIFT_SCHREYER},
+    {RES_MORD_TOP, RES_POS_UP,   RES_LIFT_SCHREYER}
+};
+
+static void res_check_strategies(
+        const char *what,
+        const int32_t *lens,
+        const int32_t *exps,
+        const int32_t *comps,
+        const int32_t *cfs_src,
+        const int32_t *row_degs,
+        const int32_t nv,
+        const int32_t nrows,
+        const int32_t ngens
+        )
+{
+    int32_t k, i, d, nt = 0;
+    char msg[160];
+
+    for (i = 0; i < ngens; ++i) {
+        nt += lens[i];
+    }
+
+    int32_t rnlv = 0, rmax = 0, rshift = 0, rpdim = 0, rreg = 0, rdim = 0;
+    int64_t rdeg = 0;
+    int32_t *rbetti = NULL, *rhilb = NULL;
+
+    for (k = 0; k < 4; ++k) {
+        const res_strat_t * const sp = res_strat_matrix + k;
+        const char * const nm = res_strat_name(sp);
+
+        int32_t *cfs = (int32_t *)malloc((unsigned long)nt * sizeof(int32_t));
+        memcpy(cfs, cfs_src, (unsigned long)nt * sizeof(int32_t));
+
+        int32_t nlv = 0, maxdeg = 0, shift = 0, pdim = 0, reg = 0, dim = 0;
+        int64_t deg = 0;
+        int32_t *betti = NULL, *hilb = NULL;
+        const int64_t n = export_module_betti(malloc, &nlv, &maxdeg, &shift,
+                &betti, &hilb, &pdim, &reg, &dim, &deg,
+                lens, exps, comps, cfs, row_degs, RES_FC, 0, sp,
+                nv, nrows, ngens, 0 /* no ceiling */, 1 /* minimal */,
+                0 /* the exact d o d = 0 check runs below instead */,
+                12, 1, 0, 2, 0);
+        free(cfs);
+
+        snprintf(msg, sizeof(msg), "%s resolves under %s", what, nm);
+        RES_CHECK(n > 0 && betti != NULL && hilb != NULL, msg);
+        if (n <= 0 || betti == NULL || hilb == NULL) {
+            free_module_betti_result_data(free, &betti, &hilb);
+            continue;
+        }
+
+        if (k == 0) {
+            rnlv = nlv; rmax = maxdeg; rshift = shift;
+            rpdim = pdim; rreg = reg; rdim = dim; rdeg = deg;
+            rbetti = betti; rhilb = hilb;
+            continue;
+        }
+
+        /* the tables may run to different lengths, the frames being
+         * different; every entry they do not share has to be zero */
+        int okb = shift == rshift;
+        const int32_t md = maxdeg > rmax ? maxdeg : rmax;
+        const int32_t ml = nlv > rnlv ? nlv : rnlv;
+        for (i = 0; i < ml && okb; ++i) {
+            for (d = 0; d <= md; ++d) {
+                const int32_t a = (i < rnlv && d <= rmax)
+                    ? rbetti[(size_t)i * (rmax + 1) + d] : 0;
+                const int32_t b = (i < nlv && d <= maxdeg)
+                    ? betti[(size_t)i * (maxdeg + 1) + d] : 0;
+                if (a != b) {
+                    okb = 0;
+                    break;
+                }
+            }
+        }
+        snprintf(msg, sizeof(msg),
+                "%s has the same minimal Betti numbers under %s", what, nm);
+        RES_CHECK(okb, msg);
+
+        int okh = 1;
+        for (d = 0; d <= md; ++d) {
+            const int32_t a = d <= rmax ? rhilb[d] : 0;
+            const int32_t b = d <= maxdeg ? hilb[d] : 0;
+            if (a != b) {
+                okh = 0;
+            }
+        }
+        snprintf(msg, sizeof(msg),
+                "%s has the same Hilbert numerator under %s", what, nm);
+        RES_CHECK(okh, msg);
+
+        snprintf(msg, sizeof(msg),
+                "%s has the same pdim, regularity, dimension and degree "
+                "under %s", what, nm);
+        RES_CHECK(pdim == rpdim && reg == rreg && dim == rdim && deg == rdeg,
+                msg);
+
+        free_module_betti_result_data(free, &betti, &hilb);
+    }
+    free_module_betti_result_data(free, &rbetti, &rhilb);
+
+    /* and the differential itself, checked exactly, under each strategy */
+    for (k = 0; k < 4; ++k) {
+        res_res_t r;
+        const int64_t n = res_run_resolution(&r, lens, exps, comps, cfs_src,
+                row_degs, nv, nrows, ngens, 0, RES_SYZ_OF_GB,
+                res_strat_matrix + k);
+        snprintf(msg, sizeof(msg), "%s is a complex under %s", what,
+                res_strat_name(res_strat_matrix + k));
+        const uint32_t pt[8] = {2, 3, 5, 7, 11, 13, 17, 19};
+        RES_CHECK(n > 0 && res_composite_is_zero(&r, nv, pt), msg);
+        res_free_resolution(&r);
+    }
+}
+
+static void res_test_strategies(
+        void
+        )
+{
+    /* an ideal: every strategy has to agree here for a trivial reason,
+     * there being one component, which makes this the control */
+    {
+        const int32_t lens[3]  = {2, 2, 2};
+        const int32_t exps[24] = {
+            0,2,0,0,  1,0,1,0,
+            0,1,1,0,  1,0,0,1,
+            0,0,2,0,  0,1,0,1};
+        const int32_t cfs[6]   = {1, RES_FC-1, 1, RES_FC-1, 1, RES_FC-1};
+        const int32_t comps[6] = {1, 1, 1, 1, 1, 1};
+        res_check_strategies("the twisted cubic",
+                lens, exps, comps, cfs, NULL, 4, 1, 3);
+    }
+
+    /* the catalecticant cokernel, rank two and no degree shift */
+    {
+        const int32_t lens[3]  = {2, 2, 2};
+        const int32_t exps[24] = {
+            1,0,0,0,  0,1,0,0,
+            0,1,0,0,  0,0,1,0,
+            0,0,1,0,  0,0,0,1};
+        const int32_t cfs[6]   = {1, 1, 1, 1, 1, 1};
+        const int32_t comps[6] = {1, 2, 1, 2, 1, 2};
+        const int32_t rd[2]    = {0, 0};
+        res_check_strategies("the catalecticant cokernel",
+                lens, exps, comps, cfs, rd, 4, 2, 3);
+    }
+
+    /* a shifted ambient free module, where the two bases really diverge:
+     * the component's degree shift is in the degree the Gröbner basis was
+     * compared by, so term over position has to add it back and position
+     * over term must not */
+    {
+        const int32_t lens[2]  = {2, 2};
+        const int32_t exps[16] = {
+            2,0,0,0,  0,0,1,0,
+            0,2,0,0,  0,0,0,1};
+        const int32_t cfs[4]   = {1, 1, 1, 1};
+        const int32_t comps[4] = {1, 2, 1, 2};
+        const int32_t rd[2]    = {0, 1};
+        res_check_strategies("coker {{x2,y2},{z,w}} with a shifted row",
+                lens, exps, comps, cfs, rd, 4, 2, 2);
+    }
+
+    /* rank three, so the direction of the component key has three values
+     * to permute rather than two */
+    {
+        const int32_t lens[3]  = {2, 2, 2};
+        const int32_t exps[18] = {
+            1,0,0,  0,1,0,
+            0,1,0,  0,0,1,
+            1,0,0,  0,0,1};
+        const int32_t cfs[6]   = {1, 1, 1, 1, 1, 1};
+        const int32_t comps[6] = {1, 2, 2, 3, 1, 3};
+        const int32_t rd[3]    = {0, 0, 0};
+        res_check_strategies("a rank three module",
+                lens, exps, comps, cfs, rd, 3, 3, 3);
+    }
+}
+
+static void res_test_strategy_names(
+        void
+        )
+{
+    res_strat_t s = res_strat_default();
+
+    RES_CHECK(s.base == RES_MORD_POT && s.pos == RES_POS_DOWN
+            && s.lift == RES_LIFT_SCHREYER,
+            "the default strategy is position over term, component down, "
+            "Schreyer above level zero");
+    RES_CHECK(strcmp(res_strat_name(NULL), "pot-down-schreyer") == 0,
+            "a null strategy names itself as the default");
+    RES_CHECK(strcmp(res_strat_name(&s), "pot-down-schreyer") == 0,
+            "the default strategy has the name the default has");
+    s.base = RES_MORD_TOP;
+    s.pos  = RES_POS_UP;
+    RES_CHECK(strcmp(res_strat_name(&s), "top-up-schreyer") == 0,
+            "each axis appears in the name");
+    RES_CHECK(res_strat_check(&s, 1) == 0,
+            "term over position with the component up is a usable strategy");
+    RES_CHECK(res_strat_check(NULL, 1) == 0,
+            "a null strategy is usable, being the default");
+    s.base = RES_MORD_SCHREYER;
+    RES_CHECK(res_strat_check(&s, 1) != 0,
+            "the Schreyer order is not usable as a *base* order");
+    RES_CHECK(strcmp(res_strat_name(&s), "unknown") == 0,
+            "an unusable strategy has no name");
+
+    const res_strat_t t = res_strat_of_order(RES_MORD_TOP);
+    RES_CHECK(t.base == RES_MORD_TOP && t.pos == RES_POS_DOWN
+            && t.lift == RES_LIFT_SCHREYER,
+            "a bare module order becomes that base with the other axes "
+            "left at their defaults");
 }
 
 /* --------------------------------------------------------------------- *
@@ -2144,6 +2746,14 @@ int main(void)
     res_test_betti_monomial();
     res_test_betti_generic_cubics();
     res_test_betti_truncation();
+    res_test_comp_koszul();
+    res_test_comp_twisted_cubic();
+    res_test_comp_nonminimal();
+    res_test_comp_module();
+    res_test_comp_degshift_and_truncation();
+    res_test_comp_rejects_bad_input();
+    res_test_strategy_names();
+    res_test_strategies();
 
     if (verbose > 0) {
         fprintf(VERBSTREAM, "res_selftest: %d checks, %d failures\n",

@@ -357,9 +357,11 @@ is a lie on any machine that is not the build machine.
 | **M3** | **Done.** `res_frame.c`: `res_frame_new` / `res_frame_init` / `res_frame_next_level` / `res_frame_complete`, frame ranks via `res_frame_betti`, and the `export_module_frame` C entry point. `res_module.c`'s validate-import-F4 preamble is now shared by both entry points as `module_gb_from_input`. |
 | **M4** | **Done.** `res_diff.c`: `res_diff_new` / `res_diff_init` / `res_diff_compute` / `res_diff_verify`, one Macaulay matrix per (level, degree) with a parallel multiplier row. `export_module_resolution` in `res_module.c` covers both `RES_SYZ_OF_GB` and `RES_SYZ_OF_INPUT` and, with `max_level = 2`, is the single syzygy matrix. Cross-checked in Macaulay2 by `test/neogb/res/res_reference.m2`. |
 | **M5** | **Done.** `res_betti.c`: `res_betti_new` / `res_betti_minimalize` / `res_betti_pdim` / `res_betti_reg` / `res_hilbert_invariants`, and the `export_module_betti` C entry point. Minimal Betti numbers by rank extraction, plus the Hilbert numerator (Macaulay2's `poincare`), projective dimension, regularity, Krull dimension and degree. Fixing the frame's block order is part of this milestone; see the notes. |
-| **M6–M9** | Not started. M9 is the option surface Macaulay2's `gb`/`syz`/`res` expect; see the notes. |
+| **M7** | **Partly done:** the incremental half. `res_comp_t` in `res_module.c` is a resolution kept alive — `res_comp_new` / `res_comp_free` / `res_comp_nlevels` / `res_comp_rank` / `res_comp_degrees` / `res_comp_degshift` / `res_comp_is_complete` / `res_comp_differential`, with `res_diff_compute_thru` doing the lazy prefix. Macaulay2 drives it as an ordinary `ResolutionComputation` through `rawMsolveResolution` and the existing `rawResolutionGetFree` / `rawResolutionGetMatrix`, and the `Msolve` package wraps it as `msolveResolution`. What is left of M7 is prune-to-minimal. See the notes. |
+| **Orders** | **Done.** `res_strat_t` in `res.h` and `res_order.c`: base order (POT/TOP), component direction (up/down) and lift (Schreyer), threaded from the C entry points to `res_diff_cmp_mon`. `test/neogb/res/res_bench_strategy.c` measures them. The default is unchanged; see the notes for the measurement and why. |
+| **M6, M8, M9** | Not started. M9 is the option surface Macaulay2's `gb`/`syz`/`res` expect; see the notes. |
 
-Verification in place: `neogb_res_selftest` (256 checks, run by `make check`), the
+Verification in place: `neogb_res_selftest` (434 checks, run by `make check`), the
 64 pre-existing diff tests still pass, and a cyclic-8 Gröbner basis is byte-identical
 to the pristine 0.10.1 baseline with no measurable slowdown.
 `test/neogb/res/res_reference.m2` is the Macaulay2 script every reference number in the
@@ -520,6 +522,145 @@ blocks whose pivots happen to be ±1, so the elimination gets the right rank wit
 ever dividing, and six random cubics in four variables is the smallest case found that
 does not.
 
+### M7 notes: a resolution kept alive
+
+Everything up to M5 is shaped as a single call — marshal in, run, marshal out,
+free — and that is the wrong shape for the question Macaulay2 actually asks. It
+asks for the *shape* of a resolution first: `rawResolutionGetFree` wants the
+rank and the degrees of F_i and nothing else. Only later, and only for the
+levels it turns out to care about, does it call `rawResolutionGetMatrix`.
+Answering the first question by materializing the whole complex defeats the
+point on exactly the inputs a resolution engine exists for.
+
+**The split is already in the mathematics.** The frame is combinatorial — no
+field arithmetic past the Gröbner basis — and it determines every free module in
+the resolution. The differential is where the linear algebra is. So
+`res_comp_new` builds the Gröbner basis and the whole frame, and from that
+moment `res_comp_rank` and `res_comp_degrees` are lookups; `res_comp_differential`
+is the only thing that costs anything.
+
+**A prefix is the only truncation that makes sense.** The block at level i in
+degree d reduces against level i−1 in degrees up to and including d, so D_i
+cannot be had without all of D_2 … D_{i−1}. Within that constraint laziness is
+free: the schedule is degree ascending and then level ascending, and restricting
+it to a range of levels visits the same blocks in the same relative order, each
+seeing the same already-reduced data below it. `res_diff_compute_thru(rd, L)`
+therefore costs exactly what computing levels 2…L in one go would, and
+`res_diff_compute` is just `res_diff_compute_thru(rd, nlv-1)`. `rd->thru` records
+how far it got, and asking again for something below it returns immediately.
+The selftest checks this the hard way: it asks for the levels from the top down,
+which makes the driver fill in a prefix it was never asked for, and requires the
+result to match `export_module_resolution` term for term.
+
+**The Gröbner basis does not survive construction.** Level 1 of the differential
+is the only thing that ever reads it — `res_frame_init` takes the lead terms and
+`res_diff_init` the coefficients — so both run eagerly and the basis and its hash
+table are released before the handle is returned. `res_diff_init` is O(the
+basis), and it buys the caller the right to hold a large resolution without also
+holding the Gröbner basis it came from, which on the inputs this exists for is
+the bigger of the two.
+
+**Lifetime across the garbage collector.** This is the one place in the interface
+where msolve state outlives a call, so it is the one place a lifetime has to be
+tracked. Macaulay2's `ResolutionComputation` derives from `our_gc_cleanup`, so
+`intern_res` installs a finalizer that deletes the object, and the destructor is
+what calls `res_comp_free`. Nothing msolve allocated is ever handed to the
+collector: a differential's flat arrays are copied into Macaulay2 objects and
+released inside `get_matrix`.
+
+**Interrupts are recoverable here**, unlike everywhere else in this interface. A
+`SIGINT` inside `res_comp_differential` longjmps out mid-`res_diff_compute_thru`,
+leaving levels at or below `rd->thru` complete and untouched and levels above it
+partly filled. Asking again recomputes from `rd->thru + 1` straight over the top
+of that, which is correct because a block only ever reads levels below it.
+`res_dpoly_alloc` clears its slot first so the second pass does not leak the
+first one's columns. The handle itself survives, so a Ctrl-C costs the work since
+the last completed level and nothing else.
+
+**One thing to expect and not mistake for a bug**: the ranks reported here are
+the frame's, and the frame is built from the Gröbner basis, which depends on the
+module order. msolve resolves under position over term; Macaulay2's own
+`res(…, Strategy => Nonminimal)` does not. So the two nonminimal resolutions of
+the same module can genuinely differ — `coker {{x²,y²},{z,0}}` over
+`k[x,y,z]` with rows in degrees 0 and 1 comes back 2,2 from msolve and 2,3,1
+from Macaulay2, and both are right, the module being free of rank two. Only the
+minimal Betti numbers are an invariant, and those are M5's, extracted from ranks
+without any of this being materialized.
+
+### Order strategies, and why the default did not change
+
+The order a resolution runs in is now a **parameter**, `res_strat_t` in `res.h`,
+carried from the C entry points down to the innermost comparison. Three axes:
+
+| axis | values | where it acts |
+|---|---|---|
+| `base` | `RES_MORD_POT`, `RES_MORD_TOP` | the order on R^ncomp, i.e. what msolve's F4 computes the level 0/1 Gröbner basis under; `ht->mord` |
+| `pos` | `RES_POS_DOWN`, `RES_POS_UP` | which component index counts as larger; `ht->mpos` |
+| `lift` | `RES_LIFT_SCHREYER` | how a level above 0 is ordered — the induced Schreyer order, the only one implemented |
+
+`NULL` means `res_strat_default()`, which is `pot-down-schreyer` — exactly what
+the engine did before strategies existed, so the refactor is behaviour
+preserving by construction. Extending this is meant to be *adding a field*, not
+changing a signature; a user supplied weight matrix is the next one, which is
+why the entry points take a pointer to the struct rather than a bare int.
+
+**What had to change for TOP.** Only the comparison of two monomials of F_j,
+`res_diff_cmp_mon`. Everything else in the frame — the colon quotients, the
+block sort, the minimalization — only ever compares *within* a block, and
+elements of one block share a parent and so a component, where POT and TOP agree
+and the component's degree shift is a common constant. Across components they do
+not agree, and there the frame's own hash table is not enough: `ev[DEG]` of a
+module monomial includes the shift of its component (`res_module.c:52`), and
+that is the degree the Gröbner basis was compared by, whereas the frame keeps
+its monomials in a plain ring table whose `ev[DEG]` is the ring degree alone.
+The shift is read back from level 0, where `res_frame_init` already stored it as
+the heft degree of each generator of R^ncomp. That was the whole obstruction —
+an unfinished feature, not a theorem.
+
+The dispatch is a `switch` on a field that is constant for a whole computation,
+not the function-pointer vtable `io.c` uses for the ring orders: it predicts
+perfectly and still inlines into the sorts that call it.
+
+**What the strategy must not change**, and what `res_test_strategies` checks
+across the whole matrix on four inputs: the minimal Betti numbers entry for
+entry, the Hilbert numerator, projective dimension, regularity, Krull dimension
+and degree — and `d ∘ d = 0` exactly, under each. These are invariants of the
+module; the frame ranks are not, and they differ by a factor. A broken
+comparator gives a "Gröbner basis" that is not one and the ranks stop
+telescoping, so this catches it immediately.
+
+**The measurement, and the surprise.** `test/neogb/res/res_bench_strategy.c`
+resolves a random corpus under every strategy. Three seeds, 50–60 random
+homogeneous modules each (3–4 variables, rank 2–4, 3–6 generators, random degree
+shifts):
+
+| | frame (vs best) | differential terms | seconds | smallest frame |
+|---|---|---|---|---|
+| `pot-down-schreyer` | 2.07 / 2.62 / 2.33 | 1.40M / 1.50M / 2.45M | 1.88 / 3.61 / 4.83 | 9 / 5 / 4 |
+| `pot-up-schreyer` | 2.14 / 2.36 / 2.18 | 1.39M / 1.38M / 2.20M | 1.86 / 3.32 / 3.61 | 5 / 3 / 5 |
+| `top-down-schreyer` | **1.00** | 2.45M / 1.10M / 3.30M | 4.28 / 3.63 / 10.2 | **42 / 36 / 35** |
+| `top-up-schreyer` | **1.00** | 2.43M / 1.11M / 3.31M | 4.20 / 3.62 / 9.90 | 4 / 6 / 6 |
+
+Term over position gives a frame **about twice as small**, consistently, and
+wins on frame size in roughly 80% of cases. It is also, on this corpus,
+**slower** — because the columns of its differential are much denser: about 350
+terms per generator against POT's 97. A smaller frame is not the same as less
+linear algebra, which is precisely the thing that could not have been settled by
+argument.
+
+So the default stays `pot-down-schreyer`. The point of the milestone is that
+changing it is now one line — `msolveResolutionStrategy()` in
+`Macaulay2/e/interface/msolve.cpp`, or the `strat` argument in C — and that
+there is a harness to justify the change with. Two caveats before anyone reads
+the table as final: the corpus is small *dense* random modules, the regime where
+frame size matters least and where the LiftTree family wins anyway (see the
+caveats at the top), and none of it is threaded yet. The frame ratio is the
+number likely to survive to real input; the wall clock is not.
+
+For ideals the question is empty: with one component POT and TOP coincide, and a
+rank-one run of the benchmark gives frame ratios of exactly 1.000 across all 30
+cases.
+
 ### M9 notes: what the Macaulay2 option tables ask for
 
 M5 finished the *outputs*. What is still entirely missing is *control over the
@@ -587,7 +728,7 @@ becomes available, and `SyzygyRows` can prune work.
 | **M4** | Nonminimal differential (degree-by-degree driver) + **single syzygy matrix** output, both `SYZ_OF_GB` and `SYZ_OF_INPUT` | `d ∘ d = 0`; complexes exact in M2; syzygies generate the same module as M2 `syz` |
 | **M5** | Rank extraction → `minimalBetti` equivalent, plus the Hilbert numerator and the invariants that fall out of it | Betti tables match M2 `minimalBetti` across the corpus, and `poincare` / `pdim` / `regularity` / `dim` / `degree` match on randomised input too |
 | **M6** | Multigraded bucketing, then torsion in the degree group | Cross-check against M2 `res` + `betti` on multigraded examples (M2 has no `minimalBetti` here — this is the novel result) |
-| **M7** | Materialize and export the full complex (flat-array C API, `mallocp` convention) | Round-trip into M2; `prune` to minimal and compare |
+| **M7** | Materialize and export the full complex (flat-array C API, `mallocp` convention), and **incrementally**: a resolution kept alive, answering for the free modules from the frame and computing a differential only when one is asked for | Round-trip into M2; the incremental handle agrees term for term with the one-shot entry point, whatever order the levels are asked for; `prune` to minimal and compare |
 | **M8** | LA backend vtable + CPU reference; then CUDA | Identical results across backends; benchmark sweep incl. sparse inputs where LiftTree should win |
 | **M9** | **Computation controls** — degree ceilings, the Hilbert function hint, a change matrix, and the stop conditions Macaulay2's `gb`/`syz`/`res` options ask for | Each control reproduces the corresponding `gb(…, Option => v)` / `res(…, Option => v)` result in M2; the unconstrained path stays bit-identical |
 | **Later** | Equivariant grading via an external group library → graded quotient rings (truncated, infinite frame) → exterior algebras (BGG/Tate) → FLINT fields → path algebras (Anick/Green–Solberg) | |

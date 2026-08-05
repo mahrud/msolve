@@ -182,6 +182,7 @@ struct ht_t
     len_t cpos;    /* index of the component slot in ev, 0 if none */
     len_t ncomp;   /* number of components of the free module */
     int32_t mord;  /* module ordering, see res_mord_t */
+    int32_t mpos;  /* component direction, see res_mpos_t */
     hm_t *cbase;   /* base monomial of each component for the Schreyer
                     * order, as hash table indices into this same table;
                     * length ncomp+1, entry 0 must be the monomial 1;
@@ -443,6 +444,8 @@ struct md_t
                     * 0 for an ideal computation in the ring itself */
     int32_t mord;  /* module monomial ordering, see res_mord_t;
                     * only used when ncomp > 0 */
+    int32_t mpos;  /* component direction, see res_mpos_t */
+    int32_t mlift; /* order on the levels above 0, see res_mlift_t */
     int32_t laopt;
     int32_t init_hts;
     int32_t nthrds;

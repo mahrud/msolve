@@ -265,9 +265,12 @@ static int64_t export_module_data(
  * On failure NULL is returned, *stp is NULL, and everything this function
  * allocated has been released.
  *
- * module_order is restricted to POT and TOP: the Schreyer order needs per
- * component base monomials, which only the frame in res_frame.c can
- * supply, and by then the Gröbner basis is already in hand. */
+ * The strategy is validated here by res_strat_check, so every entry point
+ * that reaches this one is checked before any work happens; NULL means
+ * res_strat_default().  Its base is restricted to POT and TOP, the
+ * Schreyer order as a base needing per component base monomials which
+ * only the frame in res_frame.c can supply, and by then the Gröbner basis
+ * is already in hand. */
 static bs_t *module_gb_from_input(
         md_t **stp,
         const int32_t *lens,
@@ -277,7 +280,7 @@ static bs_t *module_gb_from_input(
         const int32_t *row_degs,
         const uint32_t field_char,
         const int32_t mon_order,
-        const int32_t module_order,
+        const res_strat_t * const strat,
         const int32_t nr_vars,
         const int32_t nr_rows,
         const int32_t nr_gens,
@@ -293,6 +296,12 @@ static bs_t *module_gb_from_input(
 
     *stp = NULL;
 
+    if (res_strat_check(strat, 1)) {
+        return NULL;
+    }
+    const res_strat_t sdef = res_strat_default();
+    const res_strat_t * const sp = strat != NULL ? strat : &sdef;
+
     if (field_char == 0 || field_char >= ((uint32_t)1 << 31)) {
         fprintf(ERRSTREAM, "Module Groebner bases need a prime field of "
                 "characteristic less than 2^31.\n");
@@ -300,12 +309,6 @@ static bs_t *module_gb_from_input(
     }
     if (nr_rows < 1 || nr_gens < 1 || nr_vars < 1) {
         fprintf(ERRSTREAM, "Empty module input.\n");
-        return NULL;
-    }
-    if (module_order != RES_MORD_POT && module_order != RES_MORD_TOP) {
-        fprintf(ERRSTREAM, "Only position over term and term over position "
-                "are available here; the Schreyer order needs per component "
-                "base monomials that only the resolution engine can supply.\n");
         return NULL;
     }
     if (mon_order != 0) {
@@ -409,7 +412,9 @@ static bs_t *module_gb_from_input(
     /* this is what makes the hash table a module one; it has to happen
      * before initialize_basis, which is where the table is built */
     st->ncomp = nr_rows;
-    st->mord  = module_order;
+    st->mord  = sp->base;
+    st->mpos  = sp->pos;
+    st->mlift = sp->lift;
 
     bs_t *bs  = initialize_basis(st, NULL);
     ht_t *bht = bs->ht;
@@ -515,7 +520,7 @@ int64_t export_module_f4(
         const int32_t *row_degs,
         const uint32_t field_char,
         const int32_t mon_order,
-        const int32_t module_order,
+        const res_strat_t * const strat,
         const int32_t nr_vars,
         const int32_t nr_rows,
         const int32_t nr_gens,
@@ -537,7 +542,7 @@ int64_t export_module_f4(
     *bcf   = NULL;
 
     bs_t *gb = module_gb_from_input(&st, lens, exps, comps, cfs, row_degs,
-            field_char, mon_order, module_order, nr_vars, nr_rows, nr_gens,
+            field_char, mon_order, strat, nr_vars, nr_rows, nr_gens,
             ht_size, nr_threads, max_nr_pairs, la_option, reduce_gb,
             info_level);
     if (gb == NULL) {
@@ -583,7 +588,7 @@ int64_t export_module_frame(
         const int32_t *row_degs,
         const uint32_t field_char,
         const int32_t mon_order,
-        const int32_t module_order,
+        const res_strat_t * const strat,
         const int32_t nr_vars,
         const int32_t nr_rows,
         const int32_t nr_gens,
@@ -608,7 +613,7 @@ int64_t export_module_frame(
      * basis would carry redundant elements into level 1 and inflate every
      * level above it. */
     bs_t *gb = module_gb_from_input(&st, lens, exps, comps, cfs, row_degs,
-            field_char, mon_order, module_order, nr_vars, nr_rows, nr_gens,
+            field_char, mon_order, strat, nr_vars, nr_rows, nr_gens,
             ht_size, nr_threads, max_nr_pairs, la_option, 1 /* reduce */,
             info_level);
     if (gb == NULL) {
@@ -854,7 +859,7 @@ static int64_t module_syz_of_input(
         const int32_t *row_degs,
         const uint32_t field_char,
         const int32_t mon_order,
-        const int32_t module_order,
+        const res_strat_t * const strat,
         const int32_t nr_vars,
         const int32_t nr_rows,
         const int32_t nr_gens,
@@ -966,7 +971,7 @@ static int64_t module_syz_of_input(
     }
 
     gb = module_gb_from_input(&st, lens2, exps2, comps2, cfs2, rdeg,
-            field_char, mon_order, module_order, nr_vars, nr2, nr_gens,
+            field_char, mon_order, strat, nr_vars, nr2, nr_gens,
             ht_size, nr_threads, max_nr_pairs, la_option, 1 /* reduce */,
             info_level);
     if (gb == NULL) {
@@ -1143,7 +1148,7 @@ int64_t export_module_resolution(
         const int32_t *row_degs,
         const uint32_t field_char,
         const int32_t mon_order,
-        const int32_t module_order,
+        const res_strat_t * const strat,
         const int32_t nr_vars,
         const int32_t nr_rows,
         const int32_t nr_gens,
@@ -1169,14 +1174,6 @@ int64_t export_module_resolution(
     *dcomp   = NULL;
     *dcf     = NULL;
 
-    if (module_order != RES_MORD_POT) {
-        fprintf(ERRSTREAM, "Resolutions are only implemented for the "
-                "position over term module order: the Schreyer order the "
-                "differential runs in is the one that induces, and term "
-                "over position would need the component degree shifts "
-                "which the frame's ring hash table does not carry.\n");
-        return 0;
-    }
     if (max_level < 0) {
         fprintf(ERRSTREAM, "A negative truncation level makes no sense.\n");
         return 0;
@@ -1191,7 +1188,7 @@ int64_t export_module_resolution(
         }
         return module_syz_of_input(mallocp, nlevels, ranks, degs,
                 dlen, dexp, dcomp, dcf, lens, exps, comps, cfs, row_degs,
-                field_char, mon_order, module_order, nr_vars, nr_rows,
+                field_char, mon_order, strat, nr_vars, nr_rows,
                 nr_gens, ht_size, nr_threads, max_nr_pairs, la_option,
                 info_level, max_level == 0 ? 2 : max_level);
     }
@@ -1203,7 +1200,7 @@ int64_t export_module_resolution(
     /* As for the frame: the lead terms have to be the minimal generators
      * of the module of lead terms, which is what reducing gives. */
     bs_t *gb = module_gb_from_input(&st, lens, exps, comps, cfs, row_degs,
-            field_char, mon_order, module_order, nr_vars, nr_rows, nr_gens,
+            field_char, mon_order, strat, nr_vars, nr_rows, nr_gens,
             ht_size, nr_threads, max_nr_pairs, la_option, 1 /* reduce */,
             info_level);
     if (gb == NULL) {
@@ -1306,7 +1303,7 @@ int64_t export_module_betti(
         const int32_t *row_degs,
         const uint32_t field_char,
         const int32_t mon_order,
-        const int32_t module_order,
+        const res_strat_t * const strat,
         const int32_t nr_vars,
         const int32_t nr_rows,
         const int32_t nr_gens,
@@ -1339,12 +1336,6 @@ int64_t export_module_betti(
         *hilbnum = NULL;
     }
 
-    if (module_order != RES_MORD_POT) {
-        fprintf(ERRSTREAM, "Betti numbers are only implemented for the "
-                "position over term module order, since the differential "
-                "they are extracted from is.\n");
-        return 0;
-    }
     if (max_level < 0) {
         fprintf(ERRSTREAM, "A negative truncation level makes no sense.\n");
         return 0;
@@ -1368,7 +1359,7 @@ int64_t export_module_betti(
     }
 
     bs_t *gb = module_gb_from_input(&st, lens, exps, comps, cfs, row_degs,
-            field_char, mon_order, module_order, nr_vars, nr_rows, nr_gens,
+            field_char, mon_order, strat, nr_vars, nr_rows, nr_gens,
             ht_size, nr_threads, max_nr_pairs, la_option, 1 /* reduce */,
             info_level);
     if (gb == NULL) {
@@ -1522,4 +1513,351 @@ cleanup:
     free(st);
 
     return nelts;
+}
+
+/* --------------------------------------------------------------------- *
+ *  A resolution kept alive
+ *
+ *  Everything the one shot entry points do in a single call, split at the
+ *  one place the work naturally divides: the frame, which is
+ *  combinatorial and answers every question about the shape of the
+ *  resolution, and the differential, which is where the field arithmetic
+ *  is and which nobody should pay for until they ask for a matrix.
+ *
+ *  The Gröbner basis does not survive res_comp_new.  Level 1 of the
+ *  differential is the only thing that ever reads it -- res_frame_init
+ *  takes the lead terms and res_diff_init the coefficients -- so both run
+ *  eagerly and the basis and its hash table are released before the handle
+ *  is returned.  res_diff_init is O(the basis) and buys the caller the
+ *  right to hold a large resolution without also holding the Gröbner basis
+ *  it came from, which for the inputs this interface exists for is the
+ *  bigger of the two.
+ * --------------------------------------------------------------------- */
+
+struct res_comp_t
+{
+    md_t        *st;   /* the meta data the whole computation ran under;
+                        * nothing below reads it once the frame and level
+                        * 1 are built, but it is what a later res_comp_*
+                        * would resume from, and it is a few hundred
+                        * bytes against a resolution                    */
+    res_dgrp_t  *grp;
+    res_frame_t *f;
+    res_diff_t  *rd;   /* NULL when there is no level to differentiate */
+    int32_t      degshift;
+    int32_t      nv;
+};
+
+void res_comp_free(
+        res_comp_t **cp
+        )
+{
+    res_comp_t *c = *cp;
+
+    if (c == NULL) {
+        return;
+    }
+    res_diff_free(&c->rd);
+    res_frame_free(&c->f);
+    res_dgrp_free(&c->grp);
+    free(c->st);
+    free(c);
+    *cp = NULL;
+}
+
+res_comp_t *res_comp_new(
+        const int32_t *lens,
+        const int32_t *exps,
+        const int32_t *comps,
+        const void *cfs,
+        const int32_t *row_degs,
+        const uint32_t field_char,
+        const int32_t mon_order,
+        const res_strat_t * const strat,
+        const int32_t nr_vars,
+        const int32_t nr_rows,
+        const int32_t nr_gens,
+        const int32_t max_level,
+        const int32_t ht_size,
+        const int32_t nr_threads,
+        const int32_t max_nr_pairs,
+        const int32_t la_option,
+        const int32_t info_level
+        )
+{
+    int32_t i;
+    md_t *st       = NULL;
+    bs_t *gb       = NULL;
+    ht_t *bht      = NULL;
+    int32_t *rowmd = NULL;
+    res_comp_t *c  = NULL;
+
+    if (max_level < 0) {
+        fprintf(ERRSTREAM, "A negative truncation level makes no sense.\n");
+        return NULL;
+    }
+
+    /* the same normalization module_gb_from_input applies internally, so
+     * that the handle can report what it was */
+    int32_t mn = 0;
+    if (row_degs != NULL && nr_rows > 0) {
+        mn = row_degs[0];
+        for (i = 1; i < nr_rows; ++i) {
+            if (row_degs[i] < mn) {
+                mn = row_degs[i];
+            }
+        }
+    }
+
+    /* reduced, as for the frame: the lead terms have to be the minimal
+     * generators of the module of lead terms */
+    gb = module_gb_from_input(&st, lens, exps, comps, cfs, row_degs,
+            field_char, mon_order, strat, nr_vars, nr_rows, nr_gens,
+            ht_size, nr_threads, max_nr_pairs, la_option, 1 /* reduce */,
+            info_level);
+    if (gb == NULL) {
+        return NULL;
+    }
+    bht = gb->ht;
+
+    if (!module_input_is_graded(st)) {
+        goto cleanup;
+    }
+
+    c = (res_comp_t *)calloc(1, sizeof(res_comp_t));
+    rowmd = (int32_t *)calloc((unsigned long)nr_rows, sizeof(int32_t));
+    if (c == NULL || rowmd == NULL) {
+        goto cleanup;
+    }
+    c->degshift = mn;
+    c->nv       = nr_vars;
+
+    c->grp = res_dgrp_new_standard(nr_vars);
+    c->f   = c->grp != NULL ? res_frame_new(c->grp, st, max_level) : NULL;
+    if (c->grp == NULL || c->f == NULL) {
+        fprintf(ERRSTREAM, "Could not set up the Schreyer frame.\n");
+        goto cleanup;
+    }
+    for (i = 0; i < nr_rows; ++i) {
+        rowmd[i] = (int32_t)bht->cshift[i+1];
+    }
+
+    if (res_frame_init(c->f, gb, bht, rowmd)) {
+        goto cleanup;
+    }
+    if (res_frame_complete(c->f) < 0 || res_frame_verify(c->f)) {
+        goto cleanup;
+    }
+
+    /* A frame with only level 0 has nothing to differentiate; that is the
+     * zero submodule, and a legitimate answer rather than a failure. */
+    if (c->f->nlv >= 2) {
+        c->rd = res_diff_new(c->f, st->fc);
+        if (c->rd == NULL) {
+            fprintf(ERRSTREAM, "Could not set up the differential.\n");
+            goto cleanup;
+        }
+        if (res_diff_init(c->rd, gb, bht, st)) {
+            goto cleanup;
+        }
+    }
+
+    c->st = st;
+    st    = NULL;
+
+    free(rowmd);
+    free_shared_hash_data(bht);
+    free_basis(&gb);
+
+    return c;
+
+cleanup:
+    res_comp_free(&c);
+    free(rowmd);
+    free_shared_hash_data(bht);
+    free_basis(&gb);
+    free(st);
+
+    return NULL;
+}
+
+int32_t res_comp_nlevels(
+        const res_comp_t * const c
+        )
+{
+    if (c == NULL || c->f == NULL || c->f->bad) {
+        return 0;
+    }
+
+    return (int32_t)c->f->nlv;
+}
+
+int32_t res_comp_degshift(
+        const res_comp_t * const c
+        )
+{
+    return c == NULL ? 0 : c->degshift;
+}
+
+int res_comp_is_complete(
+        const res_comp_t * const c
+        )
+{
+    if (c == NULL || c->f == NULL) {
+        return 0;
+    }
+
+    return res_frame_is_complete(c->f);
+}
+
+int32_t res_comp_rank(
+        const res_comp_t * const c,
+        const int32_t level
+        )
+{
+    const int32_t nlv = res_comp_nlevels(c);
+
+    if (level < 0 || level >= nlv) {
+        return -1;
+    }
+
+    return (int32_t)c->f->lv[level].ld;
+}
+
+int res_comp_degrees(
+        const res_comp_t * const c,
+        const int32_t level,
+        int32_t *degs
+        )
+{
+    len_t k;
+    const int32_t rk = res_comp_rank(c, level);
+
+    if (rk < 0 || degs == NULL) {
+        return 1;
+    }
+    for (k = 0; k < (len_t)rk; ++k) {
+        degs[k] = (int32_t)c->f->lv[level].elts[k].hdeg;
+    }
+
+    return 0;
+}
+
+void free_module_differential_data(
+        void (*freep) (void *),
+        int32_t **dlen,
+        int32_t **dexp,
+        int32_t **dcomp,
+        void **dcf
+        )
+{
+    if (dlen != NULL && *dlen != NULL) {
+        (*freep)(*dlen);
+        *dlen = NULL;
+    }
+    if (dexp != NULL && *dexp != NULL) {
+        (*freep)(*dexp);
+        *dexp = NULL;
+    }
+    if (dcomp != NULL && *dcomp != NULL) {
+        (*freep)(*dcomp);
+        *dcomp = NULL;
+    }
+    if (dcf != NULL && *dcf != NULL) {
+        (*freep)(*dcf);
+        *dcf = NULL;
+    }
+}
+
+int64_t res_comp_differential(
+        void *(*mallocp) (size_t),
+        res_comp_t *c,
+        const int32_t level,
+        int32_t **dlen,
+        int32_t **dexp,
+        int32_t **dcomp,
+        void **dcf
+        )
+{
+    len_t k;
+    int64_t t, nterms = 0;
+
+    if (dlen == NULL || dexp == NULL || dcomp == NULL || dcf == NULL) {
+        return 0;
+    }
+    *dlen  = NULL;
+    *dexp  = NULL;
+    *dcomp = NULL;
+    *dcf   = NULL;
+
+    const int32_t rk = res_comp_rank(c, level);
+    if (rk < 0 || level < 1) {
+        fprintf(ERRSTREAM, "There is no differential at level %d; the "
+                "resolution has levels 0 to %d.\n",
+                level, res_comp_nlevels(c) - 1);
+        return 0;
+    }
+    if (c->rd == NULL || c->rd->bad) {
+        fprintf(ERRSTREAM, "The differential is unusable.\n");
+        return 0;
+    }
+
+    /* the prefix below this level, once; already computed levels cost
+     * nothing */
+    if (res_diff_compute_thru(c->rd, (len_t)level)) {
+        fprintf(ERRSTREAM, "Could not compute the differential up to "
+                "level %d.\n", level);
+        return 0;
+    }
+    if (res_diff_verify(c->rd, 0)) {
+        fprintf(ERRSTREAM, "The computed differential is not a complex.\n");
+        return 0;
+    }
+
+    const res_frame_t * const f = c->f;
+    const len_t nv = (len_t)c->nv;
+
+    for (k = 0; k < (len_t)rk; ++k) {
+        nterms += (int64_t)c->rd->d[level][k].len;
+    }
+    if (nterms > (int64_t)INT32_MAX / (nv > 0 ? (int64_t)nv : 1)) {
+        fprintf(ERRSTREAM,
+                "The differential is too large to store in flat arrays.\n");
+        return 0;
+    }
+
+    /* nothing can fail after this point, mallocp coming without a
+     * matching free */
+    int32_t *dl = (int32_t *)(*mallocp)(
+            (unsigned long)(rk > 0 ? rk : 1) * sizeof(int32_t));
+    int32_t *de = (int32_t *)(*mallocp)(
+            (unsigned long)(nterms > 0 ? nterms : 1)
+            * (unsigned long)nv * sizeof(int32_t));
+    int32_t *dc = (int32_t *)(*mallocp)(
+            (unsigned long)(nterms > 0 ? nterms : 1) * sizeof(int32_t));
+    int32_t *cf = (int32_t *)(*mallocp)(
+            (unsigned long)(nterms > 0 ? nterms : 1) * sizeof(int32_t));
+
+    int64_t ce = 0, cc = 0;
+    for (k = 0; k < (len_t)rk; ++k) {
+        const res_dpoly_t * const p = c->rd->d[level] + k;
+        dl[k] = (int32_t)p->len;
+        for (t = 0; t < p->len; ++t) {
+            const exp_t * const ev = f->ht->ev[p->mon[t]];
+            len_t j;
+            for (j = 1; j <= nv; ++j) {
+                de[ce++] = (int32_t)ev[j];
+            }
+            dc[cc] = p->pos[t] + 1;
+            cf[cc] = (int32_t)p->cf[t];
+            cc++;
+        }
+    }
+
+    *dlen  = dl;
+    *dexp  = de;
+    *dcomp = dc;
+    *dcf   = (void *)cf;
+
+    return nterms;
 }

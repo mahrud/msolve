@@ -31,8 +31,87 @@
 extern "C" {
 #endif
 
-/* The module monomial orders (res_mord_t) live in data.h next to ht_t,
- * since they are a property of the hash table just like ht->mo. */
+/* --------------------------------------------------------------------- *
+ *  Order strategies
+ *
+ *  There is more than one sensible order on a free module, they are not
+ *  equivalent -- the Gröbner basis, the frame ranks and every matrix above
+ *  them change with the choice -- and which one is best is an empirical
+ *  question this engine exists to answer.  So the choice is a *parameter*,
+ *  carried as one struct from the C entry points down to the innermost
+ *  comparison, rather than a constant compiled into res_diff.c.
+ *
+ *  Three independent axes:
+ *
+ *    base  how two monomials of the ambient free module R^ncomp compare.
+ *          res_mord_t, in data.h next to ht_t, since the Gröbner basis in
+ *          levels 0 and 1 is computed under it by msolve's own F4 and the
+ *          hash table is what carries it there.
+ *
+ *    pos   which component index counts as the larger one.  msolve has
+ *          always taken the smaller index to be larger (RES_POS_DOWN);
+ *          Macaulay2's Position => Up is the other one.  Note Macaulay2's
+ *          interface currently obtains Up by numbering components in
+ *          reverse as it marshals, so setting RES_POS_UP there as well
+ *          would compose to Down.
+ *
+ *    lift  how a level above 0 is ordered.  Only RES_LIFT_SCHREYER exists
+ *          and it is not really optional: Schreyer's theorem determining
+ *          the lead terms of the syzygies from the level below is exactly
+ *          what makes the frame combinatorial, and it determines the order
+ *          too.  The axis is here because it is a genuine choice
+ *          mathematically -- one could resolve level by level in any
+ *          module order -- and naming it keeps that visible.
+ *
+ *  Extending this is meant to be adding a field, not changing a signature:
+ *  the entry points take a res_strat_t pointer rather than a bare int for
+ *  that reason.  A user supplied weight matrix is the next field.
+ * --------------------------------------------------------------------- */
+
+typedef enum {
+    RES_POS_DOWN = 0, /* smaller component index is the larger monomial */
+    RES_POS_UP   = 1  /* larger component index is the larger monomial  */
+} res_mpos_t;
+
+typedef enum {
+    RES_LIFT_SCHREYER = 0 /* levels above 0 carry the order level 0 induces */
+} res_mlift_t;
+
+typedef struct res_strat_t res_strat_t;
+struct res_strat_t
+{
+    int32_t base; /* res_mord_t  */
+    int32_t pos;  /* res_mpos_t  */
+    int32_t lift; /* res_mlift_t */
+};
+
+/* Position over term, smaller component larger, Schreyer above level 0.
+ * This is what every entry point does when handed a NULL strategy, and it
+ * is what the engine did before strategies existed. */
+res_strat_t res_strat_default(
+        void
+        );
+
+/* The strategy a bare res_mord_t used to mean, for callers that have one
+ * and want the defaults for the rest. */
+res_strat_t res_strat_of_order(
+        const int32_t module_order
+        );
+
+/* Whether the strategy is one the engine can run.  for_resolution asks
+ * the stricter question, since the frame and the differential support
+ * fewer bases than a plain module Gröbner basis does.  Returns 0 when it
+ * is usable and reports the reason on stderr otherwise. */
+int res_strat_check(
+        const res_strat_t * const s,
+        const int for_resolution
+        );
+
+/* A short stable name, "pot-down-schreyer" and so on, for test output and
+ * benchmark tables.  Points into static storage. */
+const char *res_strat_name(
+        const res_strat_t * const s
+        );
 
 /* --------------------------------------------------------------------- *
  *  Degrees
@@ -252,6 +331,13 @@ struct res_frame_t
     const res_dgrp_t *grp;
     len_t             nv;
     len_t             ncomp;  /* rank of the ambient free module       */
+    res_strat_t       strat;  /* the order strategy the whole tower runs
+                               * in: strat.base and strat.pos are what the
+                               * Gröbner basis in levels 0 and 1 was
+                               * computed under, cross checked against the
+                               * module hash table in res_frame_init, and
+                               * strat.lift is how every level above 0 is
+                               * derived from it                        */
     int32_t          *gbmap;  /* for each level 1 element, the index in
                                * the Gröbner basis it was read off, so
                                * that res_diff.c can find its
@@ -392,14 +478,18 @@ struct res_diff_t
     uint32_t      fc;   /* field characteristic                         */
     res_dpoly_t **d;    /* d[i][k] = D_i(k) for 1 <= i < f->nlv         */
     len_t         nlv;
+    len_t         thru;  /* levels 1 to thru are filled in; 0 before
+                          * res_diff_init has run                       */
     int           bad;
 };
 
-/* The differential of a completed frame.  The frame must have been built
- * with the position over term order: the induced Schreyer order compares
- * components first, and the frame's plain ring hash table does not carry
- * the component degree shifts that a term over position order would have
- * to compare. */
+/* The differential of a completed frame, in the order the frame's own
+ * strategy induces.  Both bases are supported: under position over term
+ * components are compared first, so the ring comparison happens inside a
+ * single component where the degree shifts cancel and the frame's plain
+ * ring table is enough; under term over position degrees come first and
+ * the shift is added back from level 0, where res_frame_init stored it as
+ * the heft degree of each generator of R^ncomp. */
 res_diff_t *res_diff_new(
         res_frame_t *f,
         const uint32_t fc
@@ -422,6 +512,23 @@ int res_diff_init(
 /* Levels 2 upwards.  Returns 0 on success. */
 int res_diff_compute(
         res_diff_t *rd
+        );
+
+/* Levels rd->thru+1 up to and including maxlev, leaving the rest empty.
+ * Returns 0 on success, and 0 immediately if there is nothing to do.
+ *
+ * A prefix is the only truncation that makes sense: the block at level i
+ * in degree d reduces against level i-1 in degrees up to and including d,
+ * so D_i cannot be had without all of D_2 ... D_{i-1}.  Within that
+ * constraint the work is exactly the same as computing the levels in one
+ * go -- the schedule is degree ascending and then level ascending, and
+ * restricting it to a range of levels visits the same blocks in the same
+ * relative order, each one seeing the same already reduced data below it.
+ * So res_diff_compute is res_diff_compute_thru(rd, rd->nlv - 1), and
+ * calling it in several steps costs no more than calling it once. */
+int res_diff_compute_thru(
+        res_diff_t *rd,
+        const len_t maxlev
         );
 
 /* Checks the differential against the frame: every column leads with the
@@ -569,7 +676,8 @@ int res_hilbert_invariants(
  *    - prime field of characteristic 0 < p < 2^31,
  *    - degree reverse lexicographic order (mon_order 0), no elimination
  *      block, since block orders and module orders are not combined yet,
- *    - module_order is RES_MORD_POT or RES_MORD_TOP; RES_MORD_SCHREYER
+ *    - strat is checked by res_strat_check: its base is RES_MORD_POT or
+ *      RES_MORD_TOP, and NULL asks for the default.  RES_MORD_SCHREYER
  *      needs per component base monomials that only the resolution engine
  *      can supply.
  * --------------------------------------------------------------------- */
@@ -590,7 +698,7 @@ int64_t export_module_f4(
         const int32_t *row_degs, /* may be NULL */
         const uint32_t field_char,
         const int32_t mon_order,
-        const int32_t module_order,
+        const res_strat_t *strat,   /* NULL means the default */
         const int32_t nr_vars,
         const int32_t nr_rows,
         const int32_t nr_gens,
@@ -647,7 +755,7 @@ int64_t export_module_frame(
         const int32_t *row_degs, /* may be NULL */
         const uint32_t field_char,
         const int32_t mon_order,
-        const int32_t module_order,
+        const res_strat_t *strat,   /* NULL means the default */
         const int32_t nr_vars,
         const int32_t nr_rows,
         const int32_t nr_gens,
@@ -750,7 +858,7 @@ int64_t export_module_resolution(
         const int32_t *row_degs, /* may be NULL */
         const uint32_t field_char,
         const int32_t mon_order,
-        const int32_t module_order,
+        const res_strat_t *strat,   /* NULL means the default */
         const int32_t nr_vars,
         const int32_t nr_rows,
         const int32_t nr_gens,
@@ -846,7 +954,7 @@ int64_t export_module_betti(
         const int32_t *row_degs, /* may be NULL */
         const uint32_t field_char,
         const int32_t mon_order,
-        const int32_t module_order,
+        const res_strat_t *strat,   /* NULL means the default */
         const int32_t nr_vars,
         const int32_t nr_rows,
         const int32_t nr_gens,
@@ -864,6 +972,148 @@ void free_module_betti_result_data(
         void (*freep) (void *),
         int32_t **betti,
         int32_t **hilbnum
+        );
+
+/* --------------------------------------------------------------------- *
+ *  A resolution kept alive: ranks now, differentials on demand
+ *
+ *  export_module_resolution is a single shot -- it resolves everything and
+ *  hands back the whole complex in flat arrays.  That is the wrong shape
+ *  for a caller that wants to look at a large resolution before deciding
+ *  what to materialize, which is what Macaulay2 does: rawResolutionGetFree
+ *  asks only for the rank and the degrees of F_i, and rawResolutionGetMatrix
+ *  asks for one differential at a time, each of them possibly much later.
+ *
+ *  res_comp_t is that computation, kept across calls.  res_comp_new runs
+ *  the module Gröbner basis and builds the whole Schreyer frame, which is
+ *  combinatorial -- no field arithmetic happens past the Gröbner basis --
+ *  and so answers every question about the shape of the resolution
+ *  immediately.  The differential is filled in only when asked for, one
+ *  request at a time, and remembered.
+ *
+ *  The complex reported is the *nonminimal* one, exactly as with
+ *  export_module_resolution: the ranks are the frame ranks, not the
+ *  minimal Betti numbers, and there is no level past which the frame is
+ *  known to be empty.  For minimal Betti numbers use export_module_betti,
+ *  which never materializes a differential at all.
+ *
+ *  Level 0 is the ambient free module R^nr_rows, level 1 the Gröbner basis
+ *  of the submodule -- not the input generators, which msolve does not
+ *  keep a change of basis to -- and level i+1 the Schreyer syzygies of
+ *  level i.
+ *
+ *  The differential is only ever computed as a prefix: asking for D_i
+ *  computes D_2 ... D_i, because the block at level i in degree d reduces
+ *  against level i-1 in degrees up to and including d.  Asking for them
+ *  out of order is allowed and costs the same as asking in order; asking
+ *  for one already computed costs nothing.
+ *
+ *  Ownership: res_comp_new returns a handle the caller owns and must
+ *  release with res_comp_free.  Nothing else in this header allocates
+ *  anything that outlives the call, so this is the one place a caller has
+ *  to keep track of a lifetime.  The Gröbner basis and its hash table are
+ *  released inside res_comp_new, once level 1 of the differential has been
+ *  read off them; what the handle holds afterwards is the frame, its own
+ *  ring hash table, and whatever differential has been asked for.
+ * --------------------------------------------------------------------- */
+
+typedef struct res_comp_t res_comp_t;
+
+/* Takes exactly the input of export_module_f4, plus max_level, which
+ * truncates the frame at that level; pass 0 for no ceiling.  Returns NULL
+ * on failure, reporting the reason on stderr, exactly as the export_module
+ * entry points do. */
+res_comp_t *res_comp_new(
+        const int32_t *lens,
+        const int32_t *exps,
+        const int32_t *comps,
+        const void *cfs,
+        const int32_t *row_degs, /* may be NULL */
+        const uint32_t field_char,
+        const int32_t mon_order,
+        const res_strat_t *strat,   /* NULL means the default */
+        const int32_t nr_vars,
+        const int32_t nr_rows,
+        const int32_t nr_gens,
+        const int32_t max_level,
+        const int32_t ht_size,
+        const int32_t nr_threads,
+        const int32_t max_nr_pairs,
+        const int32_t la_option,
+        const int32_t info_level
+        );
+
+void res_comp_free(
+        res_comp_t **cp
+        );
+
+/* The number of levels the frame has, so the free modules are F_0 to
+ * F_{nlevels-1} and the differentials D_1 to D_{nlevels-1}.  0 if the
+ * handle is unusable. */
+int32_t res_comp_nlevels(
+        const res_comp_t * const c
+        );
+
+/* The shift that was applied to row_degs, i.e. the smallest of them: every
+ * degree reported here is the caller's minus this. */
+int32_t res_comp_degshift(
+        const res_comp_t * const c
+        );
+
+/* Whether the frame ended on its own rather than being cut off at
+ * max_level.  A truncated resolution is still exact everywhere it is
+ * reported; it just does not end. */
+int res_comp_is_complete(
+        const res_comp_t * const c
+        );
+
+/* The rank of F_level, or -1 if level is out of range. */
+int32_t res_comp_rank(
+        const res_comp_t * const c,
+        const int32_t level
+        );
+
+/* The degrees of the generators of F_level, res_comp_rank(c, level)
+ * entries, written into degs, which the caller supplies.  Returns 0 on
+ * success.  Needs no field arithmetic: this is the frame. */
+int res_comp_degrees(
+        const res_comp_t * const c,
+        const int32_t level,
+        int32_t *degs
+        );
+
+/* D_level, as one column per generator of F_level in the flat layout
+ * export_module_resolution uses:
+ *
+ *   dlen   one entry per generator of F_level, the number of terms
+ *   dexp   nr_vars exponents per term, concatenated column by column
+ *   dcomp  one entry per term, the 1-based generator of F_{level-1} it
+ *          sits in
+ *   dcf    one int32_t coefficient per term
+ *
+ * Computes whatever is missing below level as well, and remembers all of
+ * it.  The four arrays are allocated with mallocp and are released by
+ * free_module_differential_data; the handle keeps its own copy and stays
+ * usable.  Returns the number of terms, or 0 on failure, in which case
+ * nothing is allocated.  D_level of a zero F_level is 0 terms and is
+ * reported as a failure only if level itself is out of range, so check
+ * res_comp_rank first. */
+int64_t res_comp_differential(
+        void *(*mallocp) (size_t),
+        res_comp_t *c,
+        const int32_t level,
+        int32_t **dlen,
+        int32_t **dexp,
+        int32_t **dcomp,
+        void **dcf
+        );
+
+void free_module_differential_data(
+        void (*freep) (void *),
+        int32_t **dlen,
+        int32_t **dexp,
+        int32_t **dcomp,
+        void **dcf
         );
 
 #ifdef __cplusplus

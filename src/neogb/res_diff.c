@@ -39,23 +39,88 @@
  *  The module order the reduction runs in
  *
  *  A monomial of F_j is a pair (w, q) with w a ring monomial and q an
- *  index into level j.  Comparison is
+ *  index into level j.  It stands for the module monomial
  *
- *      (root(q), w * total(q), q)
+ *      w * total(q)  e_{root(q)}   of R^ncomp,
  *
- *  read left to right: the component of R^ncomp the generator lifts to,
- *  smaller being larger as everywhere else in msolve's position over term
- *  order; then the lifted ring monomial in the base ring order; then the
- *  index, larger being larger, which is Schreyer's tie break.
+ *  and the order on F_j is the one the strategy's base order on R^ncomp
+ *  induces on those, with the index q breaking ties -- larger index
+ *  larger, which is Schreyer's tie break.  That is the whole content of
+ *  RES_LIFT_SCHREYER: level 0 is literally the base order (total(q) is 1
+ *  and root(q) is the component) and every level above carries the order
+ *  the one below induces, so the tower is consistent by construction.
+ *  Schreyer's theorem needs exactly that consistency.
  *
- *  At level 0 this is literally the position over term order the Gröbner
- *  basis was computed in -- total(q) is 1 and root(q) is the component --
- *  and at every level above it is the order that level 0 one induces, so
- *  the whole tower is consistent by construction.  That consistency is
- *  what Schreyer's theorem needs, and it is why term over position is
- *  refused: under it the induced order compares degrees that include the
- *  component shifts, which the frame's plain ring table does not carry.
+ *  Both bases are here rather than one, because which is better is an
+ *  empirical question and the frames they produce differ by a factor.
+ *  The dispatch is on f->strat, constant for a whole computation, so the
+ *  branches predict perfectly and the comparison still inlines into the
+ *  sorts that call it -- which is why this is a switch and not the
+ *  function-pointer vtable io.c uses for the ring orders.
  * --------------------------------------------------------------------- */
+
+/* the component of R^ncomp, in the direction the strategy asks for */
+static inline int res_diff_cmp_root(
+        const int32_t ra,
+        const int32_t rb,
+        const int32_t pos
+        )
+{
+    if (ra == rb) {
+        return 0;
+    }
+    if (pos == RES_POS_UP) {
+        return ra > rb ? 1 : -1;
+    }
+    return ra < rb ? 1 : -1;
+}
+
+/* The lifted monomials as *module* monomials, ignoring their components:
+ * degree first, with the component's degree shift added back, then the
+ * ring order's tie break.
+ *
+ * The shift is what the frame's own table cannot supply.  ev[DEG] of a
+ * module monomial includes the shift of its component (res_module.c), and
+ * that is the degree the Gröbner basis was compared by; the frame keeps
+ * its monomials in a plain ring table, whose ev[DEG] is the ring degree
+ * alone.  Level 0 stored the shift as the heft degree of each generator,
+ * so it is read back from there. */
+static inline int res_diff_cmp_lift(
+        const hm_t la,
+        const int32_t ra,
+        const hm_t lb,
+        const int32_t rb,
+        const res_frame_t * const f
+        )
+{
+    const ht_t * const ht  = f->ht;
+    const exp_t * const ea = ht->ev[la];
+    const exp_t * const eb = ht->ev[lb];
+    len_t i;
+
+    if (ht->mo == 1) { /* lexicographic, which looks at no degree at all */
+        for (i = 1; i <= f->nv; ++i) {
+            if (ea[i] != eb[i]) {
+                return ea[i] > eb[i] ? 1 : -1;
+            }
+        }
+        return 0;
+    }
+
+    /* degree reverse lexicographic */
+    const deg_t da = (deg_t)ea[DEG] + f->lv[0].elts[ra-1].hdeg;
+    const deg_t db = (deg_t)eb[DEG] + f->lv[0].elts[rb-1].hdeg;
+    if (da != db) {
+        return da > db ? 1 : -1;
+    }
+    for (i = f->nv; i > 0; --i) {
+        if (ea[i] != eb[i]) {
+            return ea[i] < eb[i] ? 1 : -1;
+        }
+    }
+
+    return 0;
+}
 
 static inline int res_diff_cmp_mon(
         const hm_t la,
@@ -64,19 +129,38 @@ static inline int res_diff_cmp_mon(
         const hm_t lb,
         const int32_t rb,
         const int32_t pb,
-        const ht_t * const ht
+        const res_frame_t * const f
         )
 {
-    if (ra != rb) {
-        return ra < rb ? 1 : -1;
+    int c;
+
+    if (f->strat.base == RES_MORD_TOP) {
+        c = res_diff_cmp_lift(la, ra, lb, rb, f);
+        if (c != 0) {
+            return c;
+        }
+        c = res_diff_cmp_root(ra, rb, f->strat.pos);
+        if (c != 0) {
+            return c;
+        }
+    } else { /* RES_MORD_POT */
+        c = res_diff_cmp_root(ra, rb, f->strat.pos);
+        if (c != 0) {
+            return c;
+        }
+        /* Same component, so the two shifts are equal and cancel: the
+         * plain ring comparison on the frame's own table already is the
+         * module one, and it is the cheaper of the two. */
+        c = monomial_cmp(la, lb, f->ht);
+        if (c != 0) {
+            return c > 0 ? 1 : -1;
+        }
     }
-    const int c = dispatch_monomial_cmp(la, lb, ht);
-    if (c != 0) {
-        return c > 0 ? 1 : -1;
-    }
+
     if (pa != pb) {
-        return pa > pb ? 1 : -1;
+        return pa > pb ? 1 : -1; /* Schreyer's tie break */
     }
+
     return 0;
 }
 
@@ -361,6 +445,14 @@ static int res_dpoly_alloc(
         const len_t len
         )
 {
+    /* Normally this runs on a calloc'd slot and clearing is a no-op.  It
+     * is not one when a level is computed a second time, which is what
+     * happens after res_diff_compute_thru is abandoned part way through
+     * -- an interrupt in the caller -- and then asked for again: blocks
+     * below rd->thru are untouched and correct, and everything above it
+     * is recomputed over the top of a partial answer. */
+    res_dpoly_clear(p);
+
     p->len = len;
     p->mon = (hm_t *)malloc((unsigned long)(len > 0 ? len : 1) * sizeof(hm_t));
     p->pos = (int32_t *)malloc(
@@ -469,7 +561,7 @@ struct res_term_t
 typedef struct res_tctx_t res_tctx_t;
 struct res_tctx_t
 {
-    const ht_t *ht;
+    const res_frame_t *f;
 };
 
 /* descending, so the lead term comes first */
@@ -484,7 +576,7 @@ static int res_diff_cmp_term(
     const res_term_t * const y = (const res_term_t *)b;
 
     return -res_diff_cmp_mon(x->lift, x->root, x->pos,
-            y->lift, y->root, y->pos, ctx->ht);
+            y->lift, y->root, y->pos, ctx->f);
 }
 
 int res_diff_init(
@@ -506,16 +598,18 @@ int res_diff_init(
     const len_t nv = f->nv;
     const uint32_t fc = rd->fc;
 
-    if (bht->mord != RES_MORD_POT) {
-        fprintf(ERRSTREAM, "The differential is only implemented for the "
-                "position over term module order.\n");
+    if (bht->mord != RES_MORD_POT && bht->mord != RES_MORD_TOP) {
+        fprintf(ERRSTREAM, "The differential runs in the Schreyer order "
+                "induced by the module order the Gr\u00f6bner basis was "
+                "computed in, so that order has to be one res_diff_cmp_mon "
+                "implements: position over term or term over position.\n");
         return 1;
     }
 
     exp_t *e = (exp_t *)calloc((unsigned long)ht->evl, sizeof(exp_t));
     res_term_t *tm = NULL;
     len_t tsz = 0;
-    res_tctx_t ctx = {ht};
+    res_tctx_t ctx = {rd->f};
 
     if (e == NULL) {
         goto cleanup;
@@ -615,6 +709,7 @@ int res_diff_init(
     }
 
     ret = 0;
+    rd->thru = 1;
 
 cleanup:
     free(e);
@@ -631,8 +726,8 @@ cleanup:
 typedef struct res_cctx_t res_cctx_t;
 struct res_cctx_t
 {
-    const res_col_t *col;
-    const ht_t      *ht;
+    const res_col_t   *col;
+    const res_frame_t *f;
 };
 
 /* descending, so column 0 carries the largest monomial */
@@ -647,7 +742,7 @@ static int res_diff_cmp_col(
     const res_col_t * const y = ctx->col + ((const int32_t *)b)[0];
 
     return -res_diff_cmp_mon(x->lift, x->root, x->pos,
-            y->lift, y->root, y->pos, ctx->ht);
+            y->lift, y->root, y->pos, ctx->f);
 }
 
 /* Smallest indexed level mid element sitting over parent and whose own
@@ -837,7 +932,7 @@ static int res_diff_block(
     for (c = 0; c < ncols; ++c) {
         ord[c] = c;
     }
-    res_cctx_t cctx = {cm.col, ht};
+    res_cctx_t cctx = {cm.col, f};
     sort_r(ord, (unsigned long)ncols, sizeof(int32_t),
             res_diff_cmp_col, &cctx);
     for (c = 0; c < ncols; ++c) {
@@ -857,7 +952,7 @@ static int res_diff_block(
     if (tm == NULL) {
         goto cleanup;
     }
-    res_tctx_t tctx = {ht};
+    res_tctx_t tctx = {f};
 
     for (i = 0; i < nrows; ++i) {
         const res_felt_t * const el = f->lv[lev].elts + rows[i];
@@ -975,7 +1070,19 @@ int res_diff_compute(
         res_diff_t *rd
         )
 {
-    len_t i, k, lev;
+    if (rd == NULL || rd->bad) {
+        return 1;
+    }
+
+    return res_diff_compute_thru(rd, rd->nlv - 1);
+}
+
+int res_diff_compute_thru(
+        res_diff_t *rd,
+        const len_t maxlev
+        )
+{
+    len_t i, k, lev, lo, hi;
     deg_t d;
     int ret = 1;
 
@@ -986,6 +1093,15 @@ int res_diff_compute(
     res_frame_t *f   = rd->f;
     const len_t nlv  = f->nlv;
     const deg_t maxd = res_frame_max_hdeg(f);
+
+    /* Level 1 is res_diff_init's, so thru is at least 1 by the time this
+     * can run; anything at or below what is already filled in is a no-op,
+     * which is what makes repeated calls cheap. */
+    lo = rd->thru + 1 > 2 ? rd->thru + 1 : 2;
+    hi = maxlev < nlv - 1 ? maxlev : nlv - 1;
+    if (hi < lo) {
+        return 0;
+    }
 
     /* per level: the elements bucketed by degree, and the level below it
      * bucketed by parent.  Both are counting sorts over data the frame
@@ -1000,7 +1116,7 @@ int res_diff_compute(
         goto cleanup;
     }
 
-    for (lev = 2; lev < nlv; ++lev) {
+    for (lev = lo; lev <= hi; ++lev) {
         const res_level_t * const lv = f->lv + lev;
 
         bkt[lev] = (int32_t *)malloc(
@@ -1065,7 +1181,7 @@ int res_diff_compute(
      * reduces against level lev-1 in degrees up to and including d, and
      * (d, lev-1) is exactly the step before (d, lev). */
     for (d = 0; d <= maxd; ++d) {
-        for (lev = 2; lev < nlv; ++lev) {
+        for (lev = lo; lev <= hi; ++lev) {
             const int32_t b = bof[lev][d];
             const int32_t n = bof[lev][d+1] - b;
             if (n <= 0) {
@@ -1079,6 +1195,7 @@ int res_diff_compute(
     }
 
     ret = 0;
+    rd->thru = hi;
 
 cleanup:
     if (bkt != NULL) {
@@ -1153,7 +1270,10 @@ int res_diff_verify(
         return 1;
     }
 
-    for (lev = 1; lev < rd->nlv && bad <= 8; ++lev) {
+    /* only what has actually been filled in: a level past thru is empty by
+     * construction, not wrong, and every one of its columns would be
+     * reported as a violation */
+    for (lev = 1; lev <= rd->thru && bad <= 8; ++lev) {
         for (k = 0; k < f->lv[lev].ld && bad <= 8; ++k) {
             const res_dpoly_t * const p = rd->d[lev] + k;
 

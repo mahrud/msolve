@@ -493,6 +493,11 @@ int res_frame_init(
     const len_t glen  = f->grp->len;
 
     f->ncomp = bht->ncomp;
+    /* The Gröbner basis is the one thing the frame does not compute, so
+     * the order it was computed under is read off the table it lives in
+     * rather than taken on trust from the caller. */
+    f->strat.base = bht->mord;
+    f->strat.pos  = bht->mpos;
 
     exp_t *e = (exp_t *)calloc((unsigned long)evl, sizeof(exp_t));
     res_frame_gen_t *gen = (res_frame_gen_t *)malloc(
