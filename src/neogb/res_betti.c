@@ -51,11 +51,6 @@
  *  representation and is usually far better.
  * --------------------------------------------------------------------- */
 
-/* Accumulator bound.  Every summand mult*val is below fc^2 <= 2^62, and a
- * value is reduced as soon as it reaches 2^62, so the addition itself
- * always happens below 2^63 and cannot wrap. */
-#define RES_ACC_LIMIT (((uint64_t)1) << 62)
-
 typedef struct res_ech_t res_ech_t;
 struct res_ech_t
 {

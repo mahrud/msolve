@@ -598,6 +598,8 @@ int res_diff_init(
     const len_t nv = f->nv;
     const uint32_t fc = rd->fc;
 
+    rd->nthrds = md->nthrds > 1 ? (len_t)md->nthrds : 1;
+
     if (bht->mord != RES_MORD_POT && bht->mord != RES_MORD_TOP) {
         fprintf(ERRSTREAM, "The differential runs in the Schreyer order "
                 "induced by the module order the Gr\u00f6bner basis was "
@@ -776,6 +778,42 @@ static inline int32_t res_diff_reducer(
     return -1;
 }
 
+typedef struct res_rctx_t res_rctx_t;
+struct res_rctx_t
+{
+    const res_term_t  *t;
+    const res_frame_t *f;
+};
+
+/* descending, same as res_diff_cmp_term; sorts an index array over a
+ * block's reducer terms once, instead of sorting the row's own term
+ * buffer once per row -- the permutation is the same for every row
+ * because res_diff_cmp_term never reads cf. */
+static int res_diff_cmp_rord(
+        const void *a,
+        const void *b,
+        void *ctxp
+        )
+{
+    const res_rctx_t *ctx = (const res_rctx_t *)ctxp;
+    const res_term_t * const x = ctx->t + ((const int32_t *)a)[0];
+    const res_term_t * const y = ctx->t + ((const int32_t *)b)[0];
+
+    return -res_diff_cmp_mon(x->lift, x->root, x->pos,
+            y->lift, y->root, y->pos, ctx->f);
+}
+
+/* Below this many rows, a block stays serial: the row loop's per-thread
+ * buffers cost ncols + red.ld + (red.ld+1) words of setup per thread
+ * regardless of how many rows end up using them, and most blocks in a
+ * frame are small -- only the middle levels have hundreds of rows.
+ *
+ * Swept 2, 4, 8, 16, 64 on the benchmark in doc/plan-res-perf.md with
+ * nr_threads=4: 8 was the fastest (a hair ahead of 4), 2 and 16 were both
+ * a couple percent slower, and 64 gave up a third of the win to blocks
+ * that were left serial unnecessarily.  See the log for the numbers. */
+#define RES_DIFF_PAR_THRESHOLD 8
+
 static int res_diff_block(
         res_diff_t *rd,
         const len_t lev,
@@ -811,7 +849,14 @@ static int res_diff_block(
     int32_t *piv   = NULL;
     uint64_t *dns  = NULL;
     uint32_t *mult = NULL;
-    res_term_t *tm = NULL;
+    res_term_t *tm   = NULL;
+    res_term_t *rtm  = NULL;   /* the red.ld reducer terms, one computation
+                                 * per block instead of one per row        */
+    int32_t    *rord = NULL;   /* sort_r's permutation of rtm, likewise
+                                 * shared by every row in the block        */
+    hm_t       *llift = NULL;  /* per-row lead lift, computed once in a
+                                 * separate serial pass so the row loop
+                                 * below touches the hash table not at all */
 
     e = (exp_t *)calloc((unsigned long)ht->evl, sizeof(exp_t));
     if (e == NULL || res_cmap_init(&cm, 1)
@@ -916,12 +961,26 @@ static int res_diff_block(
 
     const int32_t ncols = cm.ld;
 
+    /* Rows are independent once rank/piv/red are fixed, so they can run on
+     * separate threads -- but dns/mult/tm are read-write per row, so each
+     * thread needs its own slab of them.  Small blocks stay serial: below
+     * RES_DIFF_PAR_THRESHOLD rows the setup is not worth it. */
+#ifdef _OPENMP
+    const len_t bnthrds =
+        nrows >= RES_DIFF_PAR_THRESHOLD ? rd->nthrds : 1;
+#else
+    const len_t bnthrds = 1;
+#endif
+
     ord  = (int32_t *)malloc((unsigned long)ncols * sizeof(int32_t));
     rank = (int32_t *)malloc((unsigned long)ncols * sizeof(int32_t));
     piv  = (int32_t *)malloc((unsigned long)ncols * sizeof(int32_t));
-    dns  = (uint64_t *)malloc((unsigned long)ncols * sizeof(uint64_t));
+    dns  = (uint64_t *)malloc(
+            (unsigned long)ncols * (unsigned long)bnthrds
+            * sizeof(uint64_t));
     mult = (uint32_t *)malloc(
-            (unsigned long)(red.ld > 0 ? red.ld : 1) * sizeof(uint32_t));
+            (unsigned long)(red.ld > 0 ? red.ld : 1) * (unsigned long)bnthrds
+            * sizeof(uint32_t));
     if (ord == NULL || rank == NULL || piv == NULL
             || dns == NULL || mult == NULL) {
         goto cleanup;
@@ -943,27 +1002,129 @@ static int res_diff_block(
         }
     }
 
+    /* --- pre-map the columns ------------------------------------------
+     *
+     * Every src/red column index is a cm-column, only ever used through
+     * rank[] to find its slot in dns -- so rewrite it through rank[] once,
+     * here, instead of on every scatter into dns below.
+     *
+     * Sorting each reducer row's (col, cf) pairs by the mapped column
+     * afterwards -- for monotone access into dns -- was also tried and
+     * measured separately: a clean, repeatable ~20% regression on the
+     * benchmark in doc/plan-res-perf.md (qsort's per-block overhead, times
+     * every reducer row in every block, evidently costs more than the
+     * scatter it makes monotone saves; most reducer rows here are short).
+     * Not kept -- see the log. */
+
+    for (t = 0; t < src.nt; ++t) {
+        src.col[t] = rank[src.col[t]];
+    }
+    for (t = 0; t < red.nt; ++t) {
+        red.col[t] = rank[red.col[t]];
+    }
+
     /* --- reduce ------------------------------------------------------ */
 
     tm = (res_term_t *)malloc(
-            (unsigned long)(red.ld + 1) * sizeof(res_term_t));
+            (unsigned long)(red.ld + 1) * (unsigned long)bnthrds
+            * sizeof(res_term_t));
     if (tm == NULL) {
         goto cleanup;
     }
     res_tctx_t tctx = {f};
 
+    /* --- hoist the loop-invariant parts of the row loop ---------------
+     *
+     * Every field but cf of a reducer term depends only on k, not on the
+     * row, and the sorted order of the reducer set is one permutation
+     * shared by every row (res_diff_cmp_term never reads cf either).  The
+     * per-row lead lift does vary by row, but not with the reduction
+     * below, so it gets its own serial pass here -- leaving the row loop
+     * to touch the hash table not at all, which is what step 3 needs. */
+
+    rtm  = (res_term_t *)malloc(
+            (unsigned long)(red.ld > 0 ? red.ld : 1) * sizeof(res_term_t));
+    rord = (int32_t *)malloc(
+            (unsigned long)(red.ld > 0 ? red.ld : 1) * sizeof(int32_t));
+    llift = (hm_t *)malloc(
+            (unsigned long)(nrows > 0 ? nrows : 1) * sizeof(hm_t));
+    if (rtm == NULL || rord == NULL || llift == NULL) {
+        goto cleanup;
+    }
+
+    for (k = 0; k < red.ld; ++k) {
+        rtm[k].mon  = ru[k];
+        rtm[k].pos  = rq[k];
+        rtm[k].root = f->lv[mid].elts[rq[k]].root;
+        res_frame_ht_reserve(ht, 2);
+        rtm[k].lift = res_frame_mul(
+                ht, e, ru[k], f->lv[mid].elts[rq[k]].total);
+        if (rtm[k].lift == 0) {
+            goto cleanup;
+        }
+        rord[k] = (int32_t)k;
+    }
+    res_rctx_t rctx = {rtm, f};
+    sort_r(rord, (unsigned long)red.ld, sizeof(int32_t),
+            res_diff_cmp_rord, &rctx);
+
     for (i = 0; i < nrows; ++i) {
         const res_felt_t * const el = f->lv[lev].elts + rows[i];
+        res_frame_ht_reserve(ht, 2);
+        llift[i] = res_frame_mul(
+                ht, e, el->mono, f->lv[mid].elts[el->up].total);
+        if (llift[i] == 0) {
+            goto cleanup;
+        }
+    }
 
-        memset(dns, 0, (unsigned long)ncols * sizeof(uint64_t));
-        memset(mult, 0, (unsigned long)red.ld * sizeof(uint32_t));
+    /* No goto out of the region below: a fprintf's row must still print
+     * exactly once, and sort_r is out anyway (the reducer set was sorted
+     * once above), so every failure path becomes "set err, skip the rest
+     * of this row" and the goto happens once, after the region, instead. */
+    int err = 0;
 
-        for (t = src.off[i]; t < src.off[i+1]; ++t) {
-            dns[rank[src.col[t]]] = src.cf[t];
+#ifdef _OPENMP
+#pragma omp parallel for num_threads(bnthrds) private(i) schedule(dynamic)
+#endif
+    for (i = 0; i < nrows; ++i) {
+        if (err) {
+            continue;
         }
 
-        for (c = 0; c < ncols; ++c) {
-            if (dns[c] == 0) {
+        const int32_t tid = omp_get_thread_num();
+        uint64_t   * const dnsl  = dns  + (size_t)tid * (size_t)ncols;
+        uint32_t   * const multl = mult
+            + (size_t)tid * (size_t)(red.ld > 0 ? red.ld : 1);
+        res_term_t * const tml   = tm
+            + (size_t)tid * (size_t)(red.ld + 1);
+
+        const res_felt_t * const el = f->lv[lev].elts + rows[i];
+        int32_t c;
+        int64_t t;
+        len_t k;
+        int rowerr = 0;
+
+        memset(dnsl, 0, (unsigned long)ncols * sizeof(uint64_t));
+        memset(multl, 0, (unsigned long)red.ld * sizeof(uint32_t));
+
+        for (t = src.off[i]; t < src.off[i+1]; ++t) {
+            dnsl[src.col[t]] = src.cf[t];  /* already a dns index, see
+                                             * "pre-map the columns" above */
+        }
+
+        for (c = 0; c < ncols && !rowerr; ++c) {
+            /* memset leaves every untouched column exactly 0, and early in
+             * a block that is most columns -- catch that before paying for
+             * a division that a compare already answers. */
+            if (dnsl[c] == 0) {
+                continue;
+            }
+            const uint64_t v = dnsl[c] % (uint64_t)fc;  /* one division per
+                                                          * column, not per
+                                                          * term            */
+            if (v == 0) {
+                dnsl[c] = 0;
                 continue;
             }
             const int32_t r = piv[c];
@@ -971,74 +1132,88 @@ static int res_diff_block(
                 fprintf(ERRSTREAM, "The differential of frame element "
                         "(%u,%u) does not reduce to zero: a monomial has no "
                         "reducer.\n", (unsigned)lev, (unsigned)rows[i]);
-                goto cleanup;
+                rowerr = 1;
+                continue;
             }
-            const uint64_t mul = dns[c];
-            mult[r] = (uint32_t)(((uint64_t)mult[r] + mul) % (uint64_t)fc);
+            multl[r] = (uint32_t)(((uint64_t)multl[r] + v) % (uint64_t)fc);
+            /* red.col[t] is already a dns index, see "pre-map the columns"
+             * above -- one fewer indirection than rank[red.col[t]]. */
             for (t = red.off[r]; t < red.off[r+1]; ++t) {
-                const int32_t cc = rank[red.col[t]];
-                dns[cc] = (dns[cc]
-                        + mul * (uint64_t)(fc - red.cf[t])) % (uint64_t)fc;
+                uint64_t * const slot = dnsl + red.col[t];
+                *slot += v * (uint64_t)(fc - red.cf[t]);
+                if (*slot >= RES_ACC_LIMIT) {
+                    *slot %= (uint64_t)fc;
+                }
             }
-            if (dns[c] != 0) {
+            /* the pivot is monic and leads here, so this is 0 mod fc */
+            if (dnsl[c] % (uint64_t)fc != 0) {
                 fprintf(ERRSTREAM, "A reducer of the differential is not "
                         "monic.\n");
-                goto cleanup;
+                rowerr = 1;
+                continue;
             }
+            dnsl[c] = 0;
+        }
+        if (rowerr) {
+            err = 1;
+            continue;
         }
 
-        /* --- read the multipliers off as the column ------------------ */
+        /* --- read the multipliers off as the column ------------------
+         *
+         * The lead is always the maximum of the emitted terms -- see the
+         * comment on res_diff_reducer -- and the reducers come out of
+         * rord already in descending order, so no per-row sort_r is
+         * needed: emit the lead, then the reducers in precomputed
+         * order. */
 
         len_t nt = 0;
-        tm[nt].mon  = el->mono;
-        tm[nt].pos  = el->up;
-        tm[nt].cf   = 1;
-        tm[nt].root = f->lv[mid].elts[el->up].root;
-        res_frame_ht_reserve(ht, 2);
-        tm[nt].lift = res_frame_mul(
-                ht, e, el->mono, f->lv[mid].elts[el->up].total);
-        if (tm[nt].lift == 0) {
-            goto cleanup;
-        }
+        tml[nt].mon  = el->mono;
+        tml[nt].pos  = el->up;
+        tml[nt].cf   = 1;
+        tml[nt].root = f->lv[mid].elts[el->up].root;
+        tml[nt].lift = llift[i];
         nt++;
 
         for (k = 0; k < red.ld; ++k) {
-            if (mult[k] == 0) {
+            const int32_t j = rord[k];
+            if (multl[j] == 0) {
                 continue;
             }
-            tm[nt].mon  = ru[k];
-            tm[nt].pos  = rq[k];
-            tm[nt].cf   = fc - mult[k];
-            tm[nt].root = f->lv[mid].elts[rq[k]].root;
-            res_frame_ht_reserve(ht, 2);
-            tm[nt].lift = res_frame_mul(
-                    ht, e, ru[k], f->lv[mid].elts[rq[k]].total);
-            if (tm[nt].lift == 0) {
-                goto cleanup;
-            }
+            tml[nt].mon  = rtm[j].mon;
+            tml[nt].pos  = rtm[j].pos;
+            tml[nt].root = rtm[j].root;
+            tml[nt].lift = rtm[j].lift;
+            tml[nt].cf   = fc - multl[j];
             nt++;
         }
 
-        sort_r(tm, (unsigned long)nt, sizeof(res_term_t),
-                res_diff_cmp_term, &tctx);
-
-        if (tm[0].mon != el->mono || tm[0].pos != el->up) {
+        /* the equivalent of "sort everything, then assert the lead
+         * sorted first": the reducers are already in descending order,
+         * so comparing against just the first one emitted is enough */
+        if (nt > 1 && res_diff_cmp_term(&tml[0], &tml[1], &tctx) > 0) {
             fprintf(ERRSTREAM, "The differential of frame element (%u,%u) "
                     "does not lead with the frame's monomial; the reducer "
                     "selection is wrong.\n",
                     (unsigned)lev, (unsigned)rows[i]);
-            goto cleanup;
+            err = 1;
+            continue;
         }
 
         res_dpoly_t *p = rd->d[lev] + rows[i];
         if (res_dpoly_alloc(p, nt)) {
-            goto cleanup;
+            err = 1;
+            continue;
         }
         for (k = 0; k < nt; ++k) {
-            p->mon[k] = tm[k].mon;
-            p->pos[k] = tm[k].pos;
-            p->cf[k]  = tm[k].cf;
+            p->mon[k] = tml[k].mon;
+            p->pos[k] = tml[k].pos;
+            p->cf[k]  = tml[k].cf;
         }
+    }
+
+    if (err) {
+        goto cleanup;
     }
 
     ret = 0;
@@ -1053,6 +1228,9 @@ cleanup:
     free(dns);
     free(mult);
     free(tm);
+    free(rtm);
+    free(rord);
+    free(llift);
     res_cmap_clear(&cm);
     res_rows_clear(&src);
     res_rows_clear(&red);

@@ -572,6 +572,16 @@ int64_t res_frame_betti(
  *  whose slanted degree is one larger, after the row that needs it.
  * --------------------------------------------------------------------- */
 
+/* Accumulator bound.  Every summand mult*val is below fc^2 <= 2^62, and a
+ * value is reduced as soon as it reaches 2^62, so the addition itself
+ * always happens below 2^63 and cannot wrap.
+ *
+ * Used by both res_diff.c (delayed reduction of a differential row) and
+ * res_betti.c (delayed reduction of a rank-extraction row).  gb.c's unity
+ * build includes res_diff.c before res_betti.c, so this has to live here
+ * rather than in either .c file. */
+#define RES_ACC_LIMIT (((uint64_t)1) << 62)
+
 /* One column of a differential: an element of the free module one level
  * down, as a sorted list of terms cf * mon * e_pos with mon a ring
  * monomial in the frame's hash table and pos an index into that level. */
@@ -593,6 +603,12 @@ struct res_diff_t
     len_t         nlv;
     len_t         thru;  /* levels 1 to thru are filled in; 0 before
                           * res_diff_init has run                       */
+    len_t         nthrds; /* set from md->nthrds in res_diff_init, clamped
+                           * to at least 1; rows within one res_diff_block
+                           * are independent once the pivot set is fixed,
+                           * which is the only parallelism available -- the
+                           * degree-then-level schedule that calls it is
+                           * genuinely sequential                        */
     int           bad;
 };
 
