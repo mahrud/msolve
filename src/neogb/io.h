@@ -22,6 +22,7 @@
 #define GB_IO_H
 
 #include "data.h"
+#include "order.h"
 
 void set_function_pointers(
         const md_t *st
@@ -74,6 +75,22 @@ void return_zero(
         const int32_t nr_vars,
         const uint32_t field_char,
         void *(*mallocp) (size_t)
+        );
+
+/* Set the block structure of the monomial order, see order.h.  Call
+ * after check_and_set_meta_data, which installs the legacy one or two
+ * block default derived from elim_block_len, and before the basis is
+ * created.  Passing NULL keeps that default.  Returns 0 on success. */
+int32_t set_monomial_block_order(
+        md_t *st,
+        const mo_block_t *blk
+        );
+
+/* Free the block description an md_t owns.  free_meta_data does this for
+ * you; call it directly only where an md_t is discarded with a bare
+ * free(). */
+void free_block_order(
+        md_t *st
         );
 
 int32_t check_and_set_meta_data(

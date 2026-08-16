@@ -116,7 +116,7 @@ static void insert_and_update_spairs(
                 pp[i].deg   =   -2;
             } else {
                 /* compute total degree of pair, not trivial if block order is chosen */
-                if (st->nev == 0) {
+                if (st->nbl == 1) {
                     pp[i].deg = bht->hd[pp[i].lcm].deg;
                 } else {
                     deg1  = bht->hd[pp[i].lcm].deg - bht->hd[bs->hm[i][OFFSET]].deg + bs->hm[i][DEG];

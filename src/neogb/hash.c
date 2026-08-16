@@ -75,40 +75,30 @@ ht_t *initialize_basis_hash_table(
     ht->esz   = ht->hsz / 2;
     ht->hmap  = calloc(ht->hsz, sizeof(hi_t));
 
-    if (st->nev == 0) {
-        ht->evl = nv + 1; /* store also degree at first position */
-        ht->ebl = 0;
-        for (i = 1; i <= ht->ndv; ++i) {
-            ht->dv[i-1] = i;
-        }
-    } else {
-        ht->evl = nv + 2; /* store also degrees for both blocks, see
-                           * data.h for more on exponent vector structure */
-        ht->ebl = st->nev + 1; /* store also degree at first position */
-        if (ht->ncomp > 0) {
-            fprintf(ERRSTREAM, "Module monomials are not supported together "
-                    "with block elimination orders yet.\n");
-        }
-        if (st->nev >= ht->ndv) {
-            for (i = 1; i <= ht->ndv; ++i) {
-                ht->dv[i-1] = i;
-            }
-        } else {
-            len_t ctr = 0;
-            for (i = 1; i <= st->nev; ++i) {
-                ht->dv[ctr++] = i;
-            }
-            for (i = ht->ebl+1; i < ht->ndv+2; ++i) {
-                ht->dv[ctr++] = i;
-            }
-        }
-
+    /* block layout: one degree slot per block followed by that block's
+     * variable slots, see the exponent vector comment in data.h */
+    ht->nbl = st->nbl;
+    ht->evl = nv + ht->nbl;
+    ht->bst = (len_t *)calloc((unsigned long)ht->nbl + 1, sizeof(len_t));
+    for (i = 0; i < ht->nbl; ++i) {
+        /* bst[i] is the degree slot, then bsz[i] variable slots */
+        ht->bst[i+1] = ht->bst[i] + 1 + (len_t)st->bsz[i];
     }
+
+    /* the exponent vector slot of each variable, skipping the per block
+     * degree slots; used for the divmask variables and the weights below */
+    int32_t *evi = (int32_t *)malloc((unsigned long)nv * sizeof(int32_t));
+    ht_variable_slots(ht, evi);
+
+    /* Divisor masks address variable slots explicitly, so they simply
+     * skip the per block degree slots.  Take the first ndv variable
+     * slots in variable order (ndv <= nv, see above). */
+    for (i = 0; i < ht->ndv; ++i) {
+        ht->dv[i] = (len_t)evi[i];
+    }
+
     /* append the component slot at the end of the exponent vector; ht->dv
      * only ever addresses variable slots, so divisor masks are unaffected */
-    /* filled in by the caller when the grading is not the standard one;
-     * NULL is what every reader takes as "every variable has weight one" */
-    ht->vwt = NULL;
     if (ht->ncomp > 0) {
         ht->cpos    = ht->evl;
         ht->evl     = ht->evl + 1;
@@ -122,6 +112,21 @@ ht_t *initialize_basis_hash_table(
     } else {
         ht->cpos = 0;
     }
+
+    /* Variable weights, indexed by exponent slot: degree slots and the
+     * component slot keep weight 0 so that no reader ever picks up a
+     * weight for something that is not a variable.  NULL, the standard
+     * grading, is what every reader takes as "every weight is one"; a
+     * module grading fills this in through the caller instead (res.h). */
+    ht->vwt = NULL;
+    if (st->bwt != NULL) {
+        ht->vwt = (deg_t *)calloc((unsigned long)ht->evl, sizeof(deg_t));
+        for (i = 0; i < nv; ++i) {
+            ht->vwt[evi[i]] = (deg_t)st->bwt[i];
+        }
+    }
+    free(evi);
+
     /* generate divmask map */
     ht->dm  = (sdm_t *)calloc(
             (unsigned long)(ht->ndv * ht->bpv), sizeof(sdm_t));
@@ -169,7 +174,8 @@ ht_t *copy_hash_table(
     ht->nv    = bht->nv;
     ht->mo    = bht->mo;
     ht->evl   = bht->evl;
-    ht->ebl   = bht->ebl;
+    ht->nbl   = bht->nbl;
+    ht->bst   = bht->bst;
     ht->hsz   = bht->hsz;
     ht->esz   = bht->esz;
     /* module data is shared by pointer, exactly like dm/dv/rn below */
@@ -229,7 +235,8 @@ ht_t *initialize_secondary_hash_table(
     ht->nv    = bht->nv;
     ht->mo    = bht->mo;
     ht->evl   = bht->evl;
-    ht->ebl   = bht->ebl;
+    ht->nbl   = bht->nbl;
+    ht->bst   = bht->bst;
     /* module data is shared by pointer with the basis hash table */
     ht->cpos    = bht->cpos;
     ht->ncomp   = bht->ncomp;
@@ -305,6 +312,10 @@ void free_shared_hash_data(
             free(ht->vwt);
             ht->vwt = NULL;
         }
+        if (ht->bst) {
+            free(ht->bst);
+            ht->bst = NULL;
+        }
     }
 }
 
@@ -377,6 +388,10 @@ void full_free_hash_table(
     if (ht->vwt) {
       free(ht->vwt);
       ht->vwt = NULL;
+    }
+    if (ht->bst) {
+      free(ht->bst);
+      ht->bst = NULL;
     }
   }
   free(ht);
@@ -711,8 +726,7 @@ restart:
     d   = ht->hd + pos;
     memcpy(e, a, (unsigned long)evl * sizeof(exp_t));
     d->sdm  =   generate_short_divmask(e, ht);
-    d->deg  =   e[0];
-    d->deg  +=  ht->ebl > 0 ? e[ht->ebl] : 0;
+    d->deg  =   ht_total_degree(e, ht);
     d->val  =   h;
 
     ht->eld++;
@@ -777,8 +791,7 @@ restart:
     d   = ht->hd + pos;
     memcpy(e, a, (unsigned long)evl * sizeof(exp_t));
     d->sdm  =   generate_short_divmask(e, ht);
-    d->deg  =   e[0];
-    d->deg  +=  ht->ebl > 0 ? e[ht->ebl] : 0;
+    d->deg  =   ht_total_degree(e, ht);
     d->val  =   h;
 
     ht->eld++;
@@ -856,8 +869,7 @@ static inline len_t add_to_hash_table(
     hd_t *d     = ht->hd + pos;
     memcpy(e, a, (unsigned long)ht->evl * sizeof(exp_t));
     d->sdm  =   generate_short_divmask(e, ht);
-    d->deg  =   e[0];
-    d->deg  +=  ht->ebl > 0 ? e[ht->ebl] : 0;
+    d->deg  =   ht_total_degree(e, ht);
     d->val  =   h;
 
     ht->eld++;
@@ -953,8 +965,7 @@ restart:
     d   = ht->hd + pos;
     memcpy(e, a, (unsigned long)evl * sizeof(exp_t));
     d->sdm  =   generate_short_divmask(e, ht);
-    d->deg  =   e[0];
-    d->deg  +=  ht->ebl > 0 ? e[ht->ebl] : 0;
+    d->deg  =   ht_total_degree(e, ht);
     d->val  =   h;
 
     ht->eld++;
@@ -1026,18 +1037,23 @@ static inline int prime_monomials(
     const exp_t * const ea = ht->ev[a];
     const exp_t * const eb = ht->ev[b];
 
-    const len_t evl = ht->evl;
-    const len_t ebl = ht->ebl;
-
-    for (i = 1; i < ebl; ++i) {
-        if (ea[i] != 0 && eb[i] != 0) {
-            return 0;
+    /* walk the variable slots of every block, skipping the degree slots */
+    const len_t nbl         = ht->nbl;
+    const len_t * const bst = ht->bst;
+    for (len_t b = 0; b < nbl; ++b) {
+        const len_t end = bst[b+1];
+        for (i = bst[b]+1; i < end; ++i) {
+            if (ea[i] != 0 && eb[i] != 0) {
+                return 0;
+            }
         }
     }
-    for (i = ebl+1; i < evl; ++i) {
-        if (ea[i] != 0 && eb[i] != 0) {
-            return 0;
-        }
+    /* the component slot counts as an exponent here on purpose: two
+     * module monomials both carry a nonzero component and so are never
+     * reported coprime, which is right since Buchberger's first
+     * criterion is a statement about the ring (see update.c) */
+    if (ht->cpos != 0 && ea[ht->cpos] != 0 && eb[ht->cpos] != 0) {
+        return 0;
     }
     return 1;
 }
@@ -1296,8 +1312,7 @@ restart:
         d = ht->hd + ht->eld;
         memcpy(e, n, (unsigned long)evl * sizeof(exp_t));
         d->sdm  =   generate_short_divmask(e, ht);
-        d->deg  =   e[0];
-        d->deg  +=  ht->ebl > 0 ? e[ht->ebl] : 0;
+        d->deg  =   ht_total_degree(e, ht);
         d->val  =   h;
 
         ht->eld++;
@@ -1406,63 +1421,51 @@ static inline hi_t get_lcm(
     const exp_t * const ea = ht1->ev[a];
     const exp_t * const eb = ht1->ev[b];
     exp_t etmp[ht1->evl];
-    const len_t evl = ht1->evl;
-    const len_t ebl = ht1->ebl;
+    const len_t cpos          = ht1->cpos;
+    const len_t * const bst   = ht1->bst;
+    const deg_t * const vwt   = ht1->vwt;
 
-    if (ht1->cpos != 0) {
-        const len_t cpos  = ht1->cpos;
-        const exp_t comp  = ea[cpos];
-
-        if (comp != eb[cpos]) {
+    if (cpos != 0) {
+        /* different components means there is no S-pair; the caller
+         * drops the entry, see update.c */
+        if (ea[cpos] != eb[cpos]) {
             return 0;
         }
-        for (i = 1; i < cpos; ++i) {
-            etmp[i] = ea[i] < eb[i] ? eb[i] : ea[i];
-        }
-        etmp[cpos] = comp;
-        /* The degree must skip the component slot and pick up the
-         * component's degree shift, see data.h.  This is the one place in
-         * the engine that rebuilds a degree from exponents rather than
-         * adding two degrees that were already right, so it is also the
-         * one place a non-unit weight has to be applied by hand. */
-        etmp[DEG] = (exp_t)ht1->cshift[comp];
-        if (ht1->vwt == NULL) {
-            for (i = 1; i < cpos; ++i) {
-                etmp[DEG] = (exp_t)(etmp[DEG] + etmp[i]);
-            }
-        } else {
-            const deg_t * const vwt = ht1->vwt;
-            for (i = 1; i < cpos; ++i) {
-                etmp[DEG] = (exp_t)(etmp[DEG] + vwt[i] * etmp[i]);
-            }
-        }
-#if PARALLEL_HASHING
-        return check_insert_in_hash_table(etmp, 0, ht2);
-#else
-        return insert_in_hash_table(etmp, ht2);
-#endif
+        etmp[cpos] = ea[cpos];
     }
 
-    /* set degree(s), if ebl == 0, i.e. we do not have an elimination block
-     * order then the second for loop is just not executed and the third one
-     * computes correctly the full degree of the lcm. */
-    for (i = 1; i < evl; ++i) {
-        etmp[i]  = ea[i] < eb[i] ? eb[i] : ea[i];
+    /* The lcm on the variable slots, then each block's degree rebuilt
+     * from those exponents.  This is the one place in the engine that
+     * rebuilds a degree from exponents rather than adding two degrees
+     * that were already right, so it is also the one place a non-unit
+     * weight has to be applied by hand.  The walk stops at bst[nbl],
+     * which is the component slot on a module table, so the component
+     * never enters a degree. */
+    for (len_t b = 0; b < ht1->nbl; ++b) {
+        const len_t d   = bst[b];
+        const len_t end = bst[b+1];
+        deg_t deg = 0;
+        /* the weight test is loop invariant and this is the hottest loop
+         * in the engine, so it is hoisted by hand rather than left to
+         * unswitching: the unweighted arm has to stay vectorizable */
+        if (vwt == NULL) {
+            for (i = d+1; i < end; ++i) {
+                etmp[i] = ea[i] < eb[i] ? eb[i] : ea[i];
+                deg += (deg_t)etmp[i];
+            }
+        } else {
+            for (i = d+1; i < end; ++i) {
+                etmp[i] = ea[i] < eb[i] ? eb[i] : ea[i];
+                deg += vwt[i] * (deg_t)etmp[i];
+            }
+        }
+        etmp[d] = (exp_t)deg;
     }
-    /* reset degree entries */
-    etmp[0]   = 0;
-    etmp[ebl] = 0;
-    for (i = 1; i < ebl; ++i) {
-        etmp[0]  += etmp[i];
+    if (cpos != 0) {
+        /* ev[DEG] carries the component's degree shift on every module
+         * monomial (see data.h), so it has to be put back by hand */
+        etmp[DEG] = (exp_t)(etmp[DEG] + ht1->cshift[etmp[cpos]]);
     }
-    for (i = ebl+1; i < evl; ++i) {
-        etmp[ebl] += etmp[i];
-    }
-    /* printf("lcm -> ");
-     * for (int ii = 0; ii < evl; ++ii) {
-     *     printf("%d ", etmp[ii]);
-     * }
-     * printf("\n"); */
 #if PARALLEL_HASHING
     return check_insert_in_hash_table(etmp, 0, ht2);
 #else

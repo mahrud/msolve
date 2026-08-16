@@ -372,6 +372,7 @@ stop:
     gst->application_nr_add   = st->application_nr_add;
     gst->application_nr_mult  = st->application_nr_mult;
     gst->application_nr_red   = st->application_nr_red;
+    free_block_order(st);
     free(st);
 
     if (ret != 0) {
@@ -591,7 +592,7 @@ bs_t *f4sat_trace_application_test_phase(
                                 sht->ev[sat->hm[i][j]], bht);
                     }
                     deg_t deg = bht->hd[sat->hm[i][OFFSET]].deg;
-                    if (st->nev > 0) {
+                    if (st->nbl > 1) {
                         const len_t len = sat->hm[i][LENGTH]+OFFSET;
                         for (j = OFFSET+1; j < len; ++j) {
                             if (deg < bht->hd[sat->hm[i][j]].deg) {
@@ -885,7 +886,7 @@ bs_t *f4sat_trace_application_phase(
                                 sht->ev[sat->hm[i][j]], bht);
                     }
                     deg_t deg = bht->hd[sat->hm[i][OFFSET]].deg;
-                    if (st->nev > 0) {
+                    if (st->nbl > 1) {
                         const len_t len = sat->hm[i][LENGTH]+OFFSET;
                         for (j = OFFSET+1; j < len; ++j) {
                             if (deg < bht->hd[sat->hm[i][j]].deg) {
@@ -946,6 +947,7 @@ stop:
     gst->application_nr_add   = st->application_nr_add;
     gst->application_nr_mult  = st->application_nr_mult;
     gst->application_nr_red   = st->application_nr_red;
+    free_block_order(st);
     free(st);
 
     if (ret != 0) {
@@ -1140,6 +1142,7 @@ bs_t *f4_trace_learning_phase(
     gst->trace_nr_mult  = st->trace_nr_mult + st->application_nr_mult;
     gst->trace_nr_red   = st->trace_nr_red + st->application_nr_red;
 
+    free_block_order(st);
     free(st);
 
     return bs;
@@ -1369,7 +1372,7 @@ end_sat_step:
                                     sht->ev[sat->hm[i][j]], bht);
                         }
                         deg_t deg = bht->hd[sat->hm[i][OFFSET]].deg;
-                        if (st->nev > 0) {
+                        if (st->nbl > 1) {
                             const len_t len = sat->hm[i][LENGTH]+OFFSET;
                             for (j = OFFSET+1; j < len; ++j) {
                                 if (deg < bht->hd[sat->hm[i][j]].deg) {
@@ -1692,7 +1695,7 @@ bs_t *f4sat_trace_learning_phase_2(
                                 sht->ev[sat->hm[i][j]], bht);
                     }
                     deg_t deg = bht->hd[sat->hm[i][OFFSET]].deg;
-                    if (st->nev > 0) {
+                    if (st->nbl > 1) {
                         const len_t len = sat->hm[i][LENGTH]+OFFSET;
                         for (j = OFFSET+1; j < len; ++j) {
                             if (deg < bht->hd[sat->hm[i][j]].deg) {
@@ -1790,7 +1793,7 @@ bs_t *f4sat_trace_learning_phase_2(
 }
 
 
-int64_t f4_trace_julia(
+int64_t f4_trace_julia_blocks(
         /* return values */
         int32_t *bld,   /* basis load */
         int32_t **blen, /* length of each poly in basis */
@@ -1803,6 +1806,7 @@ int64_t f4_trace_julia(
         uint32_t field_char,
         int32_t mon_order,
         int32_t elim_block_len,
+        const mo_block_t *blk,
         int32_t nr_vars,
         int32_t nr_gens,
         int32_t ht_size,
@@ -1858,6 +1862,14 @@ int64_t f4_trace_julia(
                 nr_nf, ht_size, nr_threads, max_nr_pairs, reset_ht, la_option,
                 use_signatures, reduce_gb, prime_start, nr_primes, pbm_file,
                 truncate_lifting, info_level)) {
+        return 0;
+    }
+
+    /* a general block order replaces the one or two block default that
+     * check_and_set_meta_data_trace derived from elim_block_len; it has
+     * to be in place before the hash tables bake the layout in below */
+    if (set_monomial_block_order(st, blk)) {
+        free(invalid_gens);
         return 0;
     }
 
@@ -1921,6 +1933,7 @@ int64_t f4_trace_julia(
     }
     free(bs);
     free_lucky_primes(&lp);
+    free_block_order(st);
     free(st);
 
     return 0;
@@ -2073,7 +2086,41 @@ bs_t *modular_f4(
      * just the matrix structure */
     free(mat);
 
+    free_block_order(st);
     free(st);
 
     return bs;
+}
+
+/* The elimination order is the two block case, so the legacy entry point
+ * is the general one with no explicit block description. */
+int64_t f4_trace_julia(
+        int32_t *bld,
+        int32_t **blen,
+        int32_t **bexp,
+        void **bcf,
+        const int32_t *lens,
+        const int32_t *exps,
+        const void *cfs,
+        const uint32_t field_char,
+        const int32_t mon_order,
+        const int32_t elim_block_len,
+        const int32_t nr_vars,
+        const int32_t nr_gens,
+        const int32_t ht_size,
+        const int32_t nr_threads,
+        const int32_t max_nr_pairs,
+        const int32_t reset_hash_table,
+        const int32_t la_option,
+        const int32_t reduce_gb,
+        const uint32_t prime_start,
+        const int32_t nr_primes,
+        const int32_t pbm_file,
+        const int32_t info_level
+        )
+{
+    return f4_trace_julia_blocks(bld, blen, bexp, bcf, lens, exps, cfs,
+            field_char, mon_order, elim_block_len, NULL, nr_vars, nr_gens,
+            ht_size, nr_threads, max_nr_pairs, reset_hash_table, la_option,
+            reduce_gb, prime_start, nr_primes, pbm_file, info_level);
 }

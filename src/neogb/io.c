@@ -33,23 +33,25 @@ static inline void set_exponent_vector(
 {
     len_t i;
 
-    const len_t nv  = ht->nv;
-    const len_t ebl = ht->ebl;
-    const len_t nev = st->nev;
-    const len_t off = ebl - nev + 1;
+    const len_t nv          = ht->nv;
+    const len_t * const bst = ht->bst;
+    const deg_t * const vwt = ht->vwt;
+    const int32_t * const e = iev + (nv * idx);
 
-    ev[0]   = 0;
-    ev[ebl] = 0;
-
-    for (i = 0; i < nev; ++i) {
-        ev[i+1] = (exp_t)(iev+(nv*idx))[i];
-        /* degree */
-        ev[0]   +=  ev[i+1];
-    }
-    for (i = nev; i < nv; ++i) {
-        ev[i+off] = (exp_t)(iev+(nv*idx))[i];
-        /* degree */
-        ev[ebl]    +=  ev[i+off];
+    /* Spread the nv-long input exponent vector over the blocks and set
+     * each block's degree slot to the (weighted) sum of its exponents.
+     * The input is in plain variable order, so the variables are read
+     * consecutively while the target slots step over the degree slots. */
+    len_t ctr = 0;
+    for (len_t b = 0; b < ht->nbl; ++b) {
+        const len_t d   = bst[b];
+        const len_t end = bst[b+1];
+        deg_t deg = 0;
+        for (i = d+1; i < end; ++i) {
+            ev[i] = (exp_t)e[ctr++];
+            deg += vwt == NULL ? (deg_t)ev[i] : vwt[i] * (deg_t)ev[i];
+        }
+        ev[d] = (exp_t)deg;
     }
 }
 
@@ -439,7 +441,7 @@ void import_input_data(
 
     /* set total degree of input polynomials */
     deg_t deg = 0;
-    if (st->nev) {
+    if (st->nbl > 1) {
         for (i = 0; i < ngens; ++i) {
             hm  = bs->hm[i];
             deg = ht->hd[hm[OFFSET]].deg;
@@ -525,9 +527,12 @@ static int64_t export_data(
     mpz_t *tmp_cf_q;
 
     const len_t nv  = ht->nv;
-    const len_t evl = ht->evl;
-    const len_t ebl = ht->ebl;
     const len_t lml = bs->lml;
+
+    /* the ev slot of each variable, so the exponents below come out in
+     * plain variable order with the per block degree slots skipped */
+    int32_t evi[nv];
+    ht_variable_slots(ht, evi);
 
     int64_t nterms  = 0; /* # of terms in basis */
     int64_t nelts   = 0; /* # elemnts in basis */
@@ -570,7 +575,9 @@ static int64_t export_data(
             } else {
                 ((int32_t *)cf+cc)[0] = (int32_t)0;
             }
-            for (k = 1; k < evl; ++k) {
+            /* one exponent per variable, matching the nonzero branch
+             * below and the nv-per-term stride exp was allocated with */
+            for (k = 0; k < nv; ++k) {
                 exp[ce++] = (int32_t)0;
             }
             cc += 1;
@@ -607,11 +614,8 @@ static int64_t export_data(
         }
         dt  = bs->hm[bi] + OFFSET;
         for (j = 0; j < len[cl]; ++j) {
-            for (k = 1; k < ebl; ++k) {
-                exp[ce++] = (int32_t)ht->ev[dt[j]][k];
-            }
-            for (k = ebl+1; k < evl; ++k) {
-                exp[ce++] = (int32_t)ht->ev[dt[j]][k];
+            for (k = 0; k < nv; ++k) {
+                exp[ce++] = (int32_t)ht->ev[dt[j]][evi[k]];
             }
         }
         cc  +=  len[cl];
@@ -664,6 +668,139 @@ void set_ff_bits(md_t *st, int32_t fc){
             }
         }
     }
+}
+
+/* Store the block structure of the monomial order on st, taking owning
+ * copies of the block sizes and, if given, the variable weights.  The
+ * caller is expected to have validated them with check_block_order().
+ * st->nvars must already be set. */
+static void set_block_order(
+        md_t *st,
+        const int32_t nbl,
+        const int32_t *bsz,
+        const int32_t *bwt
+        );
+
+static int check_block_order(
+        const mo_block_t *blk,
+        const int32_t nvars
+        );
+
+/* Override the monomial order's block structure on an already validated
+ * md_t; call after check_and_set_meta_data and before the basis and its
+ * hash table are created, which is where the layout gets baked in.
+ *
+ * Returns 0 on success and 1 if the description is unusable, matching
+ * check_and_set_meta_data's "nonzero means the input is corrupt". */
+int32_t set_monomial_block_order(
+        md_t *st,
+        const mo_block_t *blk
+        )
+{
+    if (blk == NULL) {
+        return 0;
+    }
+    if (!check_block_order(blk, st->nvars)) {
+        return 1;
+    }
+    set_block_order(st, blk->nbl, blk->bsz, blk->bwt);
+    return 0;
+}
+
+/* The block description is the only heap data an md_t owns outright, so
+ * the entry points that discard one with a bare free() have to shed it
+ * here first.  Idempotent. */
+void free_block_order(
+        md_t *st
+        )
+{
+    if (st == NULL) {
+        return;
+    }
+    free(st->bsz);
+    free(st->bwt);
+    st->bsz = NULL;
+    st->bwt = NULL;
+    st->nbl = 0;
+}
+
+static void set_block_order(
+        md_t *st,
+        const int32_t nbl,
+        const int32_t *bsz,
+        const int32_t *bwt
+        )
+{
+    free(st->bsz);
+    free(st->bwt);
+
+    st->nbl = nbl;
+    st->bsz = (int32_t *)malloc((unsigned long)nbl * sizeof(int32_t));
+    memcpy(st->bsz, bsz, (unsigned long)nbl * sizeof(int32_t));
+
+    st->bwt = NULL;
+    if (bwt != NULL) {
+        st->bwt = (int32_t *)malloc(
+                (unsigned long)st->nvars * sizeof(int32_t));
+        memcpy(st->bwt, bwt, (unsigned long)st->nvars * sizeof(int32_t));
+    }
+}
+
+/* Validate a block description against nvars.  Returns 0 and prints a
+ * diagnostic if it is not usable, 1 otherwise.  Errors are reported
+ * rather than fatal so that a library caller keeps control. */
+static int check_block_order(
+        const mo_block_t *blk,
+        const int32_t nvars
+        )
+{
+    if (blk->nbl < 1) {
+        fprintf(ERRSTREAM, "error: A monomial order needs at least one "
+                "variable block, got %d.\n", blk->nbl);
+        return 0;
+    }
+    if (blk->bsz == NULL) {
+        fprintf(ERRSTREAM, "error: Missing block sizes.\n");
+        return 0;
+    }
+
+    int64_t sum = 0;
+    for (int32_t i = 0; i < blk->nbl; ++i) {
+        if (blk->bsz[i] < 1) {
+            fprintf(ERRSTREAM, "error: Block %d is empty; every block "
+                    "needs at least one variable.\n", i);
+            return 0;
+        }
+        sum += blk->bsz[i];
+    }
+    if (sum != (int64_t)nvars) {
+        fprintf(ERRSTREAM, "error: Block sizes sum to %ld, but there are "
+                "%d variables.\n", (long)sum, nvars);
+        return 0;
+    }
+
+    if (blk->bwt != NULL) {
+        /* A block degree is stored in one exp_t slot, so the weights have
+         * to leave room for a useful degree range; a weight of zero is
+         * worse than tight, it stops the order from being a well order. */
+        const int32_t maxwt = (int32_t)(EXP_T_MAX / MIN_WEIGHTED_DEG_RANGE);
+        for (int32_t i = 0; i < nvars; ++i) {
+            if (blk->bwt[i] < 1) {
+                fprintf(ERRSTREAM, "error: Weight %d of variable %d is not "
+                        "positive; a block grevlex order needs positive "
+                        "weights.\n", blk->bwt[i], i);
+                return 0;
+            }
+            if (blk->bwt[i] > maxwt) {
+                fprintf(ERRSTREAM, "error: Weight %d of variable %d is too "
+                        "large; weighted degrees are stored in %lu bits, so "
+                        "weights must not exceed %d.\n", blk->bwt[i], i,
+                        CHAR_BIT * sizeof(exp_t), maxwt);
+                return 0;
+            }
+        }
+    }
+    return 1;
 }
 
 /* return 1 if validation was possible, zero otherwise */
@@ -797,14 +934,14 @@ static inline int use_block_order(
         const ht_t *ht
         )
 {
-    return ht->ebl > 0;
+    return ht->nbl > 1;
 }
 
 static inline int use_lex_order(
         const ht_t *ht
         )
 {
-    return ht->ebl == 0 && ht->mo == 1;
+    return ht->nbl == 1 && ht->mo == 1;
 }
 
 /* A module hash table carries a component slot; its order refines the
@@ -834,7 +971,7 @@ int initial_input_cmp(
         return initial_input_cmp_mod(a, b, htp);
     }
     if (use_block_order(ht)) {
-        return initial_input_cmp_be(a, b, htp);
+        return initial_input_cmp_blk(a, b, htp);
     }
     if (use_lex_order(ht)) {
         return initial_input_cmp_lex(a, b, htp);
@@ -853,7 +990,7 @@ int initial_gens_cmp(
         return initial_gens_cmp_mod(a, b, htp);
     }
     if (use_block_order(ht)) {
-        return initial_gens_cmp_be(a, b, htp);
+        return initial_gens_cmp_blk(a, b, htp);
     }
     if (use_lex_order(ht)) {
         return initial_gens_cmp_lex(a, b, htp);
@@ -871,7 +1008,7 @@ int monomial_cmp(
         return monomial_cmp_mod(a, b, ht);
     }
     if (use_block_order(ht)) {
-        return monomial_cmp_be(a, b, ht);
+        return monomial_cmp_blk(a, b, ht);
     }
     if (use_lex_order(ht)) {
         return monomial_cmp_lex(a, b, ht);
@@ -890,7 +1027,7 @@ int spair_cmp(
         return spair_cmp_mod(a, b, htp);
     }
     if (use_block_order(ht)) {
-        return spair_cmp_be(a, b, htp);
+        return spair_cmp_blk(a, b, htp);
     }
     if (use_lex_order(ht)) {
         return spair_cmp_deglex(a, b, htp);
@@ -909,7 +1046,7 @@ int hcm_cmp(
         return hcm_cmp_pivots_mod(a, b, htp);
     }
     if (use_block_order(ht)) {
-        return hcm_cmp_pivots_be(a, b, htp);
+        return hcm_cmp_pivots_blk(a, b, htp);
     }
     if (use_lex_order(ht)) {
         return hcm_cmp_pivots_lex(a, b, htp);
@@ -1285,6 +1422,14 @@ int32_t check_and_set_meta_data(
         fprintf(ERRSTREAM,"error: Too large elimination block.\n");
         exit(1);
     }
+    /* The elimination order is the two block case of the general block
+     * order, so describe it as such; everything below the API works off
+     * the block description alone.  st->nev keeps its separate meaning
+     * for msolve's solving pipeline, see data.h. */
+    set_block_order(st, st->nev == 0 ? 1 : 2,
+            (int32_t[]){st->nev == 0 ? st->nvars : st->nev,
+                        st->nvars - st->nev},
+            NULL);
     /* set hash table size */
     st->init_hts  = ht_size;
     if (st->init_hts <= 0) {

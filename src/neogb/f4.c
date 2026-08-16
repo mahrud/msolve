@@ -733,6 +733,38 @@ bs_t *core_f4(
     return bs;
 }
 
+/* The elimination order is the two block case, so the legacy entry point
+ * is the general one with no explicit block description. */
+int64_t export_f4(
+        void *(*mallocp) (size_t),
+        int32_t *bld,
+        int32_t **blen,
+        int32_t **bexp,
+        void **bcf,
+        const int32_t *lens,
+        const int32_t *exps,
+        const void *cfs,
+        const uint32_t field_char,
+        const int32_t mon_order,
+        const int32_t elim_block_len,
+        const int32_t nr_vars,
+        const int32_t nr_gens,
+        const int32_t ht_size,
+        const int32_t nr_threads,
+        const int32_t max_nr_pairs,
+        const int32_t reset_ht,
+        const int32_t la_option,
+        const int32_t reduce_gb,
+        const int32_t pbm_file,
+        const int32_t info_level
+        )
+{
+    return export_f4_blocks(mallocp, bld, blen, bexp, bcf,
+            lens, exps, cfs, field_char, mon_order, elim_block_len, NULL,
+            nr_vars, nr_gens, ht_size, nr_threads, max_nr_pairs, reset_ht,
+            la_option, reduce_gb, pbm_file, info_level);
+}
+
 int64_t export_results_from_f4(
     /* return values */
     int32_t *bld,   /* basis load */
@@ -766,7 +798,7 @@ int64_t export_results_from_f4(
  *     first all exponents of generator 1, then all of generator 2, ...
  *
  *  RETURNs the length of the jl_basis array */
-int64_t export_f4(
+int64_t export_f4_blocks(
         void *(*mallocp) (size_t),
         /* return values */
         int32_t *bld,   /* basis load */
@@ -780,6 +812,7 @@ int64_t export_f4(
         const uint32_t field_char,
         const int32_t mon_order,
         const int32_t elim_block_len,
+        const mo_block_t *blk,
         const int32_t nr_vars,
         const int32_t nr_gens,
         const int32_t ht_size,
@@ -805,8 +838,8 @@ int64_t export_f4(
     int success = 0;
 
     const int32_t use_signatures    =   0;
-    success = initialize_gba_input_data(&bs, &bht, &md,
-            lens, exps, cfs, field_char, mon_order, elim_block_len,
+    success = initialize_gba_input_data_blocks(&bs, &bht, &md,
+            lens, exps, cfs, field_char, mon_order, elim_block_len, blk,
             nr_vars, nr_gens, 0 /* # normal forms */, ht_size,
             nr_threads, max_nr_pairs, reset_ht, la_option, use_signatures,
             reduce_gb, pbm_file, 0 /*truncate_lifting*/, info_level);
@@ -846,6 +879,7 @@ int64_t export_f4(
         free_basis(&bs);
     }
 
+    free_block_order(md);
     free(md);
     md    = NULL;
 

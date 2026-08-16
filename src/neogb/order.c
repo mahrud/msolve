@@ -603,256 +603,113 @@ static int spair_cmp_drl(
 
 
 /*
- * IMPLEMENTATIONS FOR BLOCK ELIMINATION ORDER:
- * 2 blocks, each block handled by the degree
- * reverse lexicographical order
+ * IMPLEMENTATIONS FOR BLOCK ORDERS:
+ * the variables are split into ht->nbl blocks, each block handled by the
+ * degree reverse lexicographical order, the blocks compared left to
+ * right.  nbl == 2 is the classical elimination order; nbl == 1 is plain
+ * DRL and is served by the faster specialised functions above instead.
  *  */
 
-static int initial_input_cmp_be(
+static int initial_input_cmp_blk(
         const void *a,
         const void *b,
         void *htp
         )
 {
-    len_t i;
     ht_t *ht  = htp;
 
     const hm_t ha  = ((hm_t **)a)[0][OFFSET];
     const hm_t hb  = ((hm_t **)b)[0][OFFSET];
 
-    const exp_t * const ea  = ht->ev[ha];
-    const exp_t * const eb  = ht->ev[hb];
-
-    /* first block */
-    if (ea[0] < eb[0]) {
-        return -1;
-    } else {
-        if (ea[DEG] != eb[DEG]) {
-            return 1;
-        }
-    }
-
-    /* note: reverse lexicographical */
-    i = ht->ebl-1;
-    while (i > 1 && ea[i] == eb[i]) {
-        --i;
-    }
-    if (eb[i] - ea[i] != 0) {
-        return eb[i] - ea[i];
-    } else {
-        /* second block */
-        if (ea[ht->ebl] < eb[ht->ebl]) {
-            return -1;
-        } else {
-            if (ea[ht->ebl] != eb[ht->ebl]) {
-                return 1;
-            }
-        }
-
-        /* note: reverse lexicographical */
-        i = ht->evl-1;
-        while (i > ht->ebl && ea[i] == eb[i]) {
-            --i;
-        }
-        return eb[i] - ea[i];
-    }
+    return cmp_blocks(ht->ev[ha], ht->ev[hb], ht);
 }
 
-static int initial_gens_cmp_be(
+static int initial_gens_cmp_blk(
         const void *a,
         const void *b,
         void *htp
         )
 {
-    len_t i;
     ht_t *ht  = htp;
 
     const hm_t ha  = **(hm_t **)a;
     const hm_t hb  = **(hm_t **)b;
 
-    const exp_t * const ea  = ht->ev[ha];
-    const exp_t * const eb  = ht->ev[hb];
-    /* first block */
-    if (ea[0] < eb[0]) {
-        return 1;
-    } else {
-        if (ea[0] != eb[0]) {
-            return -1;
-        }
-    }
-
-    /* note: reverse lexicographical */
-    i = ht->ebl-1;
-    while (i > 1 && ea[i] == eb[i]) {
-        --i;
-    }
-    if (ea[i] - eb[i] != 0) {
-        return ea[i] - eb[i];
-    } else {
-        /* second block */
-        if (ea[ht->ebl] < eb[ht->ebl]) {
-            return 1;
-        } else {
-            if (ea[ht->ebl] != eb[ht->ebl]) {
-                return -1;
-            }
-        }
-
-        /* note: reverse lexicographical */
-        i = ht->evl-1;
-        while (i > ht->ebl && ea[i] == eb[i]) {
-            --i;
-        }
-        return ea[i] - eb[i];
-    }
+    /* terms inside a polynomial are stored decreasingly */
+    return -cmp_blocks(ht->ev[ha], ht->ev[hb], ht);
 }
 
-static int monomial_cmp_pivots_be(
+static int monomial_cmp_pivots_blk(
         const hi_t a,
         const hi_t b,
         const ht_t * const ht
         )
 {
-    len_t i;
-
-    const hd_t ha = ht->hd[a];
-    const hd_t hb = ht->hd[b];
 #if ORDER_COLUMNS
     /* first known pivots vs. tail terms */
+    const hd_t ha = ht->hd[a];
+    const hd_t hb = ht->hd[b];
     if (ha.idx != hb.idx) {
-        if (ha.idx < hb.idx) {
-            return 1;
-        } else {
-            return -1;
-        }
+        return ha.idx < hb.idx ? 1 : -1;
     }
 #endif
 
-    const exp_t * const ea  = ht->ev[a];
-    const exp_t * const eb  = ht->ev[b];
-
-    /* first block */
-    if (ea[0] > eb[0]) {
-        return -1;
-    } else {
-        if (ea[0] != eb[0]) {
-            return 1;
-        }
-    }
-
-    /* note: reverse lexicographical */
-    i = ht->ebl-1;
-    while (i > 1 && ea[i] == eb[i]) {
-        --i;
-    }
-    if (ea[i] - eb[i] != 0) {
-        return ea[i] - eb[i];
-    } else {
-        /* second block */
-        if (ea[ht->ebl] > eb[ht->ebl]) {
-            return -1;
-        } else {
-            if (ea[ht->ebl] != eb[ht->ebl]) {
-                return 1;
-            }
-        }
-
-        /* note: reverse lexicographical */
-        i = ht->evl-1;
-        while (i > ht->ebl && ea[i] == eb[i]) {
-            --i;
-        }
-        return ea[i] - eb[i];
-    }
+    /* columns are sorted decreasingly, hence the sign flip */
+    return -cmp_blocks(ht->ev[a], ht->ev[b], ht);
 }
 
-static inline int monomial_cmp_be(
+static inline int monomial_cmp_blk(
         const hi_t a,
         const hi_t b,
         const ht_t *ht
         )
 {
-    len_t i;
-
     if (a == b) {
         return 0;
     }
-
-    const exp_t * const ea  = ht->ev[a];
-    const exp_t * const eb  = ht->ev[b];
-
-    /* first block */
-    if (ea[0] > eb[0]) {
-        return 1;
-    } else {
-        if (ea[0] != eb[0]) {
-            return -1;
-        }
-    }
-
-    i = ht->ebl-1;
-    while (i > 1 && ea[i] == eb[i]) {
-        --i;
-    }
-    if (eb[i] - ea[i] != 0) {
-        return eb[i] - ea[i];
-    } else {
-        /* second block */
-        if (ea[ht->ebl] > eb[ht->ebl]) {
-            return 1;
-        } else {
-            if (ea[ht->ebl] != eb[ht->ebl]) {
-                return -1;
-            }
-        }
-
-        i = ht->evl-1;
-        while (i > ht->ebl && ea[i] == eb[i]) {
-            --i;
-        }
-        return eb[i] - ea[i];
-    }
+    return cmp_blocks(ht->ev[a], ht->ev[b], ht);
 }
 
 /* comparison for hash-column-maps */
-static int hcm_cmp_pivots_be(
+static int hcm_cmp_pivots_blk(
         const void *a,
         const void *b,
         void *htp
         )
 {
     const ht_t *ht  = (ht_t *)htp;
-    const hi_t ma  = ((hi_t *)a)[0];
-    const hi_t mb  = ((hi_t *)b)[0];
+    const hi_t ma   = ((hi_t *)a)[0];
+    const hi_t mb   = ((hi_t *)b)[0];
 
-    return monomial_cmp_pivots_be(ma, mb, ht);
+    return monomial_cmp_pivots_blk(ma, mb, ht);
 }
 
-static int spair_cmp_be(
+/* Comparison for s-pairs.  The total degree has to stay the primary key:
+ * select_spairs_by_minimal_degree reads the minimal degree off the first
+ * pair after sorting and stops at the first pair of a larger degree
+ * (symbol.c), which is only correct if the sort is nondecreasing in deg.
+ * A block order is not degree compatible, so unlike spair_cmp_drl this
+ * cannot delegate straight to monomial_cmp. */
+static int spair_cmp_blk(
         const void *a,
         const void *b,
         void *htp
         )
 {
-    const hi_t da   = ((spair_t *)a)->deg;
-    const hi_t db   = ((spair_t *)b)->deg;
+    const deg_t da  = ((spair_t *)a)->deg;
+    const deg_t db  = ((spair_t *)b)->deg;
 
-    if (da - db != 0) {
-        return da - db;
-    } else {
+    if (da != db) {
+        return da < db ? -1 : 1;
+    }
 
-        const hi_t la   = ((spair_t *)a)->lcm;
-        const hi_t lb   = ((spair_t *)b)->lcm;
-        const ht_t *ht  = (ht_t *)htp;
+    const hi_t la   = ((spair_t *)a)->lcm;
+    const hi_t lb   = ((spair_t *)b)->lcm;
+    const ht_t *ht  = (ht_t *)htp;
 
-        int mc = (int)monomial_cmp(la, lb, ht);
-        if (mc != 0) {
-            if (mc < 0) {
-                return -1;
-            } else {
-                return 1;
-            }
-        }
+    const int mc = (int)monomial_cmp(la, lb, ht);
+    if (mc != 0) {
+        return mc < 0 ? -1 : 1;
     }
     return 0;
 }

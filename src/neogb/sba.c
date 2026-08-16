@@ -198,10 +198,10 @@ static int is_signature_needed(
     exp_t *ev   =   ht->ev[0];
     memcpy(ev, ht->ev[smat->pr[idx][SM_SMON]],
             (unsigned long)ht->evl * sizeof(exp_t));;
-    /* Note: ht->ebl = #elimination variables + 1 */
-    len_t shift   = var_idx < ht->ebl - 1 ? 1: 2;
-    len_t deg_pos = shift == 2 ? ht->ebl : 0;
-    ev[var_idx+shift]++;
+    /* the variable's own slot and the degree slot of its block */
+    len_t var_pos, deg_pos;
+    ht_variable_slot(ht, var_idx, &var_pos, &deg_pos);
+    ev[var_pos]++;
     ev[deg_pos]++;
 
     const len_t sig_idx = smat->pr[idx][SM_SIDX];
@@ -329,9 +329,9 @@ static void add_row_to_sba_matrix(
         enlarge_hash_table(ht);
     }
     const len_t cld = smat->cld;
-    /* Note: ht->ebl = #elimination variables + 1 */
-    len_t shift     = var_idx < ht->ebl - 1 ? 1: 2;
-    len_t deg_pos   = shift == 2 ? ht->ebl : 0;
+    /* the variable's own slot and the degree slot of its block */
+    len_t var_pos, deg_pos;
+    ht_variable_slot(ht, var_idx, &var_pos, &deg_pos);
     /* copy monomial entries in row */
     smat->cr[cld]  =   malloc(
             ((unsigned long)smat->pr[idx][SM_LEN]+SM_OFFSET) * sizeof(hm_t));
@@ -351,7 +351,7 @@ static void add_row_to_sba_matrix(
     const len_t len =  cr[SM_LEN] + SM_OFFSET;
     for (len_t i = SM_OFFSET; i < len; ++i) {
         memcpy(ev, ht->ev[cr[i]], (unsigned long)ht->evl * sizeof(exp_t));
-        ev[var_idx+shift]++;
+        ev[var_pos]++;
         ev[deg_pos]++;
         cr[i] = insert_in_hash_table(ev, ht);
     }

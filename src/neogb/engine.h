@@ -23,6 +23,38 @@
 #define GB_ENGINE_H
 
 #include "data.h"
+#include "order.h"
+
+/* Set up basis, hash table and meta data for a Groebner basis
+ * computation in the block order described by blk (see order.h); NULL
+ * falls back to the one or two block order that elim_block_len
+ * describes, which is what the legacy entry point below passes. */
+int initialize_gba_input_data_blocks(
+        bs_t **bsp,
+        ht_t **bhtp,
+        md_t **stp,
+        /* input values */
+        const int32_t *lens,
+        const int32_t *exps,
+        const void *cfs,
+        uint32_t field_char,
+        int32_t mon_order,
+        int32_t elim_block_len,
+        const mo_block_t *blk,
+        int32_t nr_vars,
+        int32_t nr_gens,
+        int32_t nr_nf,
+        int32_t ht_size,
+        int32_t nr_threads,
+        int32_t max_nr_pairs,
+        int32_t reset_ht,
+        int32_t la_option,
+        int32_t use_signatures,
+        int32_t reduce_gb,
+        int32_t pbm_file,
+        int32_t truncate_lifting,
+        int32_t info_level
+        );
 
 int initialize_gba_input_data(
         bs_t **bsp,

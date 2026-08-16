@@ -30,6 +30,19 @@ md_t *copy_meta_data(
     md_t *md = (md_t *)malloc(sizeof(md_t));
     memcpy(md, gmd, sizeof(md_t));
     md->fc  = prime;
+    /* the block description is owned per md_t, so the memcpy'd pointers
+     * have to be replaced by copies or the two would double free */
+    if (gmd->bsz != NULL) {
+        md->bsz = (int32_t *)malloc(
+                (unsigned long)gmd->nbl * sizeof(int32_t));
+        memcpy(md->bsz, gmd->bsz, (unsigned long)gmd->nbl * sizeof(int32_t));
+    }
+    if (gmd->bwt != NULL) {
+        md->bwt = (int32_t *)malloc(
+                (unsigned long)gmd->nvars * sizeof(int32_t));
+        memcpy(md->bwt, gmd->bwt,
+                (unsigned long)gmd->nvars * sizeof(int32_t));
+    }
     md->min_deg_in_first_deg_fall = gmd->min_deg_in_first_deg_fall;
     md->application_nr_mult = 0;
     md->application_nr_add  = 0;
@@ -60,6 +73,8 @@ void free_meta_data(
         free_pairset(&(md->ps));
     }
     free(md->hcm);
+    free(md->bsz);
+    free(md->bwt);
 
     ht_t *ht = md->ht;
     if (ht != NULL) {
@@ -115,17 +130,38 @@ void print_initial_statistics(
         fprintf(file, "field characteristic   %11u\n", st->fc);
         fprintf(file, "homogeneous input?     %11d\n", st->homogeneous);
         fprintf(file, "signature-based computation %6d\n", st->use_signatures);
-        if (st->mo == 0 && st->nev == 0) {
-            fprintf(file, "monomial order                 DRL\n");
-        }
-        if (st->mo == 0 && st->nev > 0) {
-            fprintf(file, "monomial order             ELIM(%d)\n", st->nev);
-        }
-        if (st->mo == 1 && st->nev == 0) {
-            fprintf(file, "monomial order                 LEX\n");
-        }
-        if ((st->mo != 0) && (st->mo != 1)) {
-            fprintf(file, "monomial order           DONT KNOW\n");
+        /* the block structure overrides st->mo, exactly as the
+         * dispatchers in io.c do */
+        if (st->nbl > 1) {
+            if (st->nev > 0 && st->nbl == 2) {
+                fprintf(file, "monomial order             ELIM(%d)\n", st->nev);
+            } else {
+                fprintf(file, "monomial order           BLOCK(");
+                for (int32_t i = 0; i < st->nbl; ++i) {
+                    fprintf(file, "%s%d", i > 0 ? "," : "", st->bsz[i]);
+                }
+                fprintf(file, ")\n");
+            }
+            if (st->bwt != NULL) {
+                fprintf(file, "variable weights               ");
+                for (int32_t i = 0; i < st->nvars; ++i) {
+                    fprintf(file, "%s%d", i > 0 ? "," : "", st->bwt[i]);
+                }
+                fprintf(file, "\n");
+            }
+        } else {
+            if (st->mo == 1) {
+                fprintf(file, "monomial order                 LEX\n");
+            } else {
+                fprintf(file, "monomial order                 DRL\n");
+                if (st->bwt != NULL) {
+                    fprintf(file, "variable weights               ");
+                    for (int32_t i = 0; i < st->nvars; ++i) {
+                        fprintf(file, "%s%d", i > 0 ? "," : "", st->bwt[i]);
+                    }
+                    fprintf(file, "\n");
+                }
+            }
         }
         if (st->reset_ht == 2147483647) {
             fprintf(file, "basis hash table resetting     OFF\n");

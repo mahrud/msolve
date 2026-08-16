@@ -22,7 +22,7 @@
 #include "engine.h"
 #include "../msolve/streams.h"
 
-int initialize_gba_input_data(
+int initialize_gba_input_data_blocks(
         bs_t **bsp,
         ht_t **bhtp,
         md_t **stp,
@@ -33,6 +33,7 @@ int initialize_gba_input_data(
         uint32_t field_char,
         int32_t mon_order,
         int32_t elim_block_len,
+        const mo_block_t *blk,
         int32_t nr_vars,
         int32_t nr_gens,
         int32_t nr_nf,
@@ -79,6 +80,13 @@ int initialize_gba_input_data(
         return 0;
     }
 
+    /* a general block order replaces the one or two block default that
+     * check_and_set_meta_data derived from elim_block_len; it has to be
+     * in place before the hash table bakes the layout in below */
+    if (set_monomial_block_order(st, blk)) {
+        free(invalid_gens);
+        return 0;
+    }
 
     /* initialize basis */
     bs  = initialize_basis(st, NULL);
@@ -111,6 +119,40 @@ int initialize_gba_input_data(
     free(invalid_gens);
 
     return 1;
+}
+
+/* The elimination order is the two block case, so the legacy entry point
+ * is the general one with no explicit block description. */
+int initialize_gba_input_data(
+        bs_t **bsp,
+        ht_t **bhtp,
+        md_t **stp,
+        const int32_t *lens,
+        const int32_t *exps,
+        const void *cfs,
+        uint32_t field_char,
+        int32_t mon_order,
+        int32_t elim_block_len,
+        int32_t nr_vars,
+        int32_t nr_gens,
+        int32_t nr_nf,
+        int32_t ht_size,
+        int32_t nr_threads,
+        int32_t max_nr_pairs,
+        int32_t reset_ht,
+        int32_t la_option,
+        int32_t use_signatures,
+        int32_t reduce_gb,
+        int32_t pbm_file,
+        int32_t truncate_lifting,
+        int32_t info_level
+        )
+{
+    return initialize_gba_input_data_blocks(bsp, bhtp, stp,
+            lens, exps, cfs, field_char, mon_order, elim_block_len, NULL,
+            nr_vars, nr_gens, nr_nf, ht_size, nr_threads, max_nr_pairs,
+            reset_ht, la_option, use_signatures, reduce_gb, pbm_file,
+            truncate_lifting, info_level);
 }
 
 bs_t *core_gba(

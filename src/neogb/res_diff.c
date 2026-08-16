@@ -107,19 +107,13 @@ static inline int res_diff_cmp_lift(
         return 0;
     }
 
-    /* degree reverse lexicographic */
-    const deg_t da = (deg_t)ea[DEG] + f->lv[0].elts[ra-1].hdeg;
-    const deg_t db = (deg_t)eb[DEG] + f->lv[0].elts[rb-1].hdeg;
-    if (da != db) {
-        return da > db ? 1 : -1;
-    }
-    for (i = f->nv; i > 0; --i) {
-        if (ea[i] != eb[i]) {
-            return ea[i] < eb[i] ? 1 : -1;
-        }
-    }
-
-    return 0;
+    /* block grevlex, which for a single block is the ordinary degree
+     * reverse lexicographic order; the component shift goes into the
+     * first block's degree, the same slot it occupies on the module
+     * table the basis was computed on */
+    return cmp_blocks_shifted(ea, eb, ht,
+            (deg_t)f->lv[0].elts[ra-1].hdeg,
+            (deg_t)f->lv[0].elts[rb-1].hdeg);
 }
 
 static inline int res_diff_cmp_mon(

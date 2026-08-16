@@ -32,8 +32,8 @@ static inline void set_linear_poly_8(nvars_t nlins, uint32_t *lineqs,
                                      int32_t *bexp_lm, bs_t *bs) {
 
   const int nv = bht->nv;
-  const len_t ebl = bht->ebl;
-  const len_t evl = bht->evl;
+  int32_t evi[nv];
+  ht_variable_slots(bht, evi);
   len_t ctr = 0;
   exp_t *etmp = (exp_t *)calloc((unsigned long)nv, sizeof(exp_t));
   for (long i = 0; i < nlins * ((nv + 1)); i++) {
@@ -59,12 +59,8 @@ static inline void set_linear_poly_8(nvars_t nlins, uint32_t *lineqs,
           exp_t *exp = bht->ev[dt[j]];
           /* convert to usual exponent vector without block elimination storage
            * structure */
-          ctr = 0;
-          for (int k = 1; k < ebl; ++k) {
-            etmp[ctr++] = (int32_t)exp[k];
-          }
-          for (int k = ebl + 1; k < evl; ++k) {
-            etmp[ctr++] = (int32_t)exp[k];
+          for (ctr = 0; ctr < nv; ++ctr) {
+            etmp[ctr] = exp[evi[ctr]];
           }
 
           int isvar = 0;
@@ -90,8 +86,8 @@ static inline void set_linear_poly_16(nvars_t nlins, uint32_t *lineqs,
                                       int32_t *bexp_lm, bs_t *bs) {
 
   const int nv = bht->nv;
-  const len_t ebl = bht->ebl;
-  const len_t evl = bht->evl;
+  int32_t evi[nv];
+  ht_variable_slots(bht, evi);
   len_t ctr = 0;
   exp_t *etmp = (exp_t *)calloc((unsigned long)nv, sizeof(exp_t));
   for (long i = 0; i < nlins * ((nv + 1)); i++) {
@@ -120,12 +116,8 @@ static inline void set_linear_poly_16(nvars_t nlins, uint32_t *lineqs,
           exp_t *exp = bht->ev[dt[j]];
           /* convert to usual exponent vector without block elimination storage
            * structure */
-          ctr = 0;
-          for (int k = 1; k < ebl; ++k) {
-            etmp[ctr++] = (int32_t)exp[k];
-          }
-          for (int k = ebl + 1; k < evl; ++k) {
-            etmp[ctr++] = (int32_t)exp[k];
+          for (ctr = 0; ctr < nv; ++ctr) {
+            etmp[ctr] = exp[evi[ctr]];
           }
 
           int isvar = 0;
@@ -151,8 +143,8 @@ static inline void set_linear_poly_32(nvars_t nlins, uint32_t *lineqs,
                                       int32_t *bexp_lm, bs_t *bs) {
 
   const int nv = bht->nv;
-  const len_t ebl = bht->ebl;
-  const len_t evl = bht->evl;
+  int32_t evi[nv];
+  ht_variable_slots(bht, evi);
   len_t ctr = 0;
   exp_t *etmp = (exp_t *)calloc((unsigned long)nv, sizeof(exp_t));
   for (long i = 0; i < nlins * ((nv + 1)); i++) {
@@ -178,12 +170,8 @@ static inline void set_linear_poly_32(nvars_t nlins, uint32_t *lineqs,
           exp_t *exp = bht->ev[dt[j]];
           /* convert to usual exponent vector without block elimination storage
            * structure */
-          ctr = 0;
-          for (int k = 1; k < ebl; ++k) {
-            etmp[ctr++] = (int32_t)exp[k];
-          }
-          for (int k = ebl + 1; k < evl; ++k) {
-            etmp[ctr++] = (int32_t)exp[k];
+          for (ctr = 0; ctr < nv; ++ctr) {
+            etmp[ctr] = exp[evi[ctr]];
           }
 
           int isvar = 0;

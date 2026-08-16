@@ -219,6 +219,7 @@ int64_t export_nf(
     if (bs != NULL) {
         free_basis(&bs);
     }
+    free_block_order(md);
     free(md);
     md    = NULL;
 

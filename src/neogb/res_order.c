@@ -33,10 +33,13 @@
 
 #include "res.h"
 
-/* Index range of the variable slots in a module exponent vector.  The
- * component sits at ht->cpos, which is the last slot, so variables run
- * over [1, cpos).  Block elimination orders are rejected at hash table
- * setup time, so there is no second degree slot to skip here. */
+/* Layout of a module exponent vector: the component sits at ht->cpos,
+ * which is the last slot, and the ring part below it is laid out in
+ * blocks as data.h describes.  The lexicographic comparison below is the
+ * only one that walks the slots by hand, and it runs only for the single
+ * block order, where [1, cpos) is exactly the variables; the block
+ * orders go through cmp_blocks in order.h, which knows about the per
+ * block degree slots and steps over them. */
 
 /* --------------------------------------------------------------------- *
  *  Strategies
@@ -150,24 +153,17 @@ static inline int res_cmp_component(
     return ea[cpos] < eb[cpos] ? 1 : -1;
 }
 
-/* degree reverse lexicographical on the monomial parts */
-static inline int res_cmp_terms_drl(
+/* Block grevlex on the monomial parts, which for a single block is
+ * ordinary degree reverse lexicographical.  cmp_blocks reads only the
+ * slots below ht->cpos, so the component is untouched here and stays the
+ * business of res_cmp_component above. */
+static inline int res_cmp_terms_ring(
         const exp_t * const ea,
         const exp_t * const eb,
         const ht_t * const ht
         )
 {
-    len_t i;
-
-    if (ea[DEG] != eb[DEG]) {
-        return ea[DEG] > eb[DEG] ? 1 : -1;
-    }
-    for (i = ht->cpos - 1; i > 0; --i) {
-        if (ea[i] != eb[i]) {
-            return (int)eb[i] - (int)ea[i];
-        }
-    }
-    return 0;
+    return cmp_blocks(ea, eb, ht);
 }
 
 /* lexicographical on the monomial parts */
@@ -243,10 +239,10 @@ static inline int res_monomial_cmp_ev(
                 return c;
             }
             return ht->mo == 1 ? res_cmp_terms_lex(ea, eb, ht)
-                               : res_cmp_terms_drl(ea, eb, ht);
+                               : res_cmp_terms_ring(ea, eb, ht);
         case RES_MORD_TOP:
             c = ht->mo == 1 ? res_cmp_terms_lex(ea, eb, ht)
-                            : res_cmp_terms_drl(ea, eb, ht);
+                            : res_cmp_terms_ring(ea, eb, ht);
             if (c != 0) {
                 return c;
             }

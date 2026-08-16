@@ -418,21 +418,13 @@ res_frame_t *res_frame_new(
 
     /* The weights come along too, for the reason res_frame_hdeg gives.
      * They are left NULL when every variable has weight one, so the
-     * standard grading takes exactly the path it always did. */
-    for (i = 0; i < f->nv; ++i) {
-        if (grp->vhdeg[i] != 1) {
-            f->ht->vwt = (deg_t *)calloc(
-                    (unsigned long)f->ht->evl, sizeof(deg_t));
-            if (f->ht->vwt == NULL) {
-                full_free_hash_table(&f->ht);
-                free(f);
-                return NULL;
-            }
-            for (i = 0; i < f->nv; ++i) {
-                f->ht->vwt[i+1] = grp->vhdeg[i];
-            }
-            break;
-        }
+     * standard grading takes exactly the path it always did.  A weighted
+     * block order copied in with rmd above may have put them here
+     * already, in which case this only checks that the two agree. */
+    if (res_install_weights(f->ht, grp)) {
+        full_free_hash_table(&f->ht);
+        free(f);
+        return NULL;
     }
 
     f->lvsz = f->maxlv > 0 ? f->maxlv + 1 : 8;

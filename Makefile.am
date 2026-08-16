@@ -8,6 +8,7 @@ bin_PROGRAMS	= msolve
 msolve_SOURCES 	= src/msolve/main.c
 
 check_PROGRAMS		= neogb_io \
+			  neogb_order_block \
 			  neogb_res_selftest \
 			  fglm_build_matrixn_radical-shape-31 \
 			  fglm_build_matrixn_nonradical-shape-31 \
@@ -76,13 +77,15 @@ checkdiff               = test/diff/diff_bug-2nd-prime-bad.sh \
 
 # dist_check_DATA         = test/input_files
 neogb_io_SOURCES 	= test/neogb/io/validate_input_data.c
+neogb_order_block_SOURCES = test/neogb/order/block_order.c
 neogb_res_selftest_SOURCES = test/neogb/res/res_selftest.c
 # a measurement rather than a test, so it is built but not run by make check
 noinst_PROGRAMS = res_bench_strategy
 res_bench_strategy_SOURCES = test/neogb/res/res_bench_strategy.c
 # LDADD above already links libneogb
 # the Macaulay2 script every reference number in res_selftest.c came from
-EXTRA_DIST = test/neogb/res/res_reference.m2
+EXTRA_DIST = test/neogb/res/res_reference.m2 \
+	     test/neogb/order/block_reference.m2
 fglm_build_matrixn_radical_shape_31_SOURCES = test/fglm/build_matrixn_radical-shape-31.c
 fglm_build_matrixn_nonradical_shape_31_SOURCES = test/fglm/build_matrixn_nonradical-shape-31.c
 fglm_build_matrixn_nonradical_radicalshape_31_SOURCES = test/fglm/build_matrixn_nonradical-radicalshape-31.c

@@ -29,8 +29,12 @@
 /* Like set_exponent_vector in io.c, but for a module monomial: writes the
  * component into the trailing slot and folds that component's degree
  * shift into ev[DEG], which is the invariant the rest of the hash table
- * relies on (see data.h).  Block elimination orders are not supported
- * together with modules, so there is only one degree slot to fill. */
+ * relies on (see data.h).
+ *
+ * With a block order there is one degree slot per block; the component
+ * shift goes into the first of them, matching get_lcm in hash.c, so that
+ * the module degree is the shifted one in exactly one place and the
+ * remaining blocks carry their plain ring degrees. */
 static inline void set_module_exponent_vector(
         exp_t *ev,
         const int32_t *iev,
@@ -42,18 +46,25 @@ static inline void set_module_exponent_vector(
     len_t i;
 
     const len_t nv          = ht->nv;
+    const len_t * const bst = ht->bst;
     const exp_t comp        = (exp_t)icomp[idx];
     const deg_t * const vwt = ht->vwt;
+    const int32_t * const e = iev + (nv * idx);
 
-    ev[DEG] = 0;
-    for (i = 0; i < nv; ++i) {
-        ev[i+1]  = (exp_t)(iev+(nv*idx))[i];
-        /* ev[DEG] is the *heft* degree: under the standard grading every
-         * weight is one and this is msolve's usual total degree, and vwt
-         * is NULL so the multiplication is not even compiled into the
-         * path that input takes */
-        ev[DEG]  = (exp_t)(ev[DEG]
-                + (vwt != NULL ? vwt[i+1] * ev[i+1] : ev[i+1]));
+    len_t ctr = 0;
+    for (len_t b = 0; b < ht->nbl; ++b) {
+        const len_t d   = bst[b];
+        const len_t end = bst[b+1];
+        /* a block's degree slot is the *heft* degree of that block:
+         * under the standard grading every weight is one and this is
+         * msolve's usual total degree, and vwt is NULL so the
+         * multiplication is not even compiled into the path input takes */
+        deg_t deg = 0;
+        for (i = d+1; i < end; ++i) {
+            ev[i] = (exp_t)e[ctr++];
+            deg += vwt == NULL ? (deg_t)ev[i] : vwt[i] * (deg_t)ev[i];
+        }
+        ev[d] = (exp_t)deg;
     }
     ev[DEG]      = (exp_t)(ev[DEG] + ht->cshift[comp]);
     ev[ht->cpos] = comp;
@@ -175,6 +186,14 @@ static int64_t export_module_data(
     const len_t nv   = ht->nv;
     const len_t lml  = bs->lml;
 
+    /* the exponent vector slot of each variable, which under a block
+     * order is not simply k+1: the per block degree slots sit in between */
+    int32_t *evi = (int32_t *)malloc((unsigned long)nv * sizeof(int32_t));
+    if (evi == NULL) {
+        return 0;
+    }
+    ht_variable_slots(ht, evi);
+
     int64_t nterms = 0;
     int64_t nelts  = 0;
 
@@ -190,6 +209,7 @@ static int64_t export_module_data(
     if (nelts > (int64_t)(pow(2, 31))) {
         fprintf(ERRSTREAM,
                 "Basis has more than 2^31 elements, cannot store it.\n");
+        free(evi);
         return 0;
     }
 
@@ -239,12 +259,13 @@ static int64_t export_module_data(
             default:
                 fprintf(ERRSTREAM, "Unsupported coefficient width %d in a "
                         "module basis.\n", md->ff_bits);
+                free(evi);
                 return 0;
         }
         dt = bs->hm[bi] + OFFSET;
         for (j = 0; j < len[cl]; ++j) {
-            for (k = 1; k <= nv; ++k) {
-                exp[ce++] = (int32_t)ht->ev[dt[j]][k];
+            for (k = 0; k < nv; ++k) {
+                exp[ce++] = (int32_t)ht->ev[dt[j]][evi[k]];
             }
             comp[cc+j] = (int32_t)ht->ev[dt[j]][ht->cpos];
         }
@@ -257,6 +278,8 @@ static int64_t export_module_data(
     *bexp  = exp;
     *bcomp = comp;
     *bcf   = (void *)cf;
+
+    free(evi);
 
     return nterms;
 }
@@ -399,6 +422,7 @@ static int module_gb_from_input(
         const int32_t *row_degs,
         const uint32_t field_char,
         const int32_t mon_order,
+        const mo_block_t * const blk,
         const res_strat_t * const strat,
         const res_grading_t * const grading,
         const int32_t nr_vars,
@@ -618,6 +642,15 @@ static int module_gb_from_input(
         goto fail;
     }
 
+    /* A general block order replaces the single block default.  cmp_blocks
+     * reads only the slots below ht->cpos, so the module order keeps the
+     * component key it always had and only its ring part changes; see
+     * res_cmp_terms_ring. */
+    if (set_monomial_block_order(st, blk)) {
+        free(invalid_gens);
+        goto fail;
+    }
+
     /* this is what makes the hash table a module one; it has to happen
      * before initialize_basis, which is where the table is built */
     st->ncomp = nr_rows;
@@ -628,29 +661,13 @@ static int module_gb_from_input(
     bs_t *bs  = initialize_basis(st, NULL);
     ht_t *bht = bs->ht;
 
-    /* Variable weights.  Leaving this NULL under the standard grading is
-     * not an optimization but the guarantee that the unweighted path is
-     * the one it always was: every reader checks for NULL and takes the
-     * old branch.  It has to be in place before core_gba, since the
-     * secondary hash tables built in there share it by pointer. */
-    int unit_weights = 1;
-    for (i = 0; i < nr_vars; ++i) {
-        if (grp->vhdeg[i] != 1) {
-            unit_weights = 0;
-            break;
-        }
-    }
-    if (!unit_weights) {
-        bht->vwt = (deg_t *)calloc((unsigned long)bht->evl, sizeof(deg_t));
-        if (bht->vwt == NULL) {
-            free(invalid_gens);
-            free_shared_hash_data(bht);
-            free_basis(&bs);
-            goto fail;
-        }
-        for (i = 0; i < nr_vars; ++i) {
-            bht->vwt[i+1] = grp->vhdeg[i];
-        }
+    /* Variable weights, which a weighted block order may already have
+     * put here; see res_install_weights. */
+    if (res_install_weights(bht, grp)) {
+        free(invalid_gens);
+        free_shared_hash_data(bht);
+        free_basis(&bs);
+        goto fail;
     }
 
     /* Degree shifts of the ambient free module, as heft degrees, which is
@@ -741,6 +758,59 @@ void free_module_f4_result_data(
     }
 }
 
+int64_t export_module_f4_blocks(
+        void *(*mallocp) (size_t),
+        int32_t *bld,
+        int32_t **blen,
+        int32_t **bexp,
+        int32_t **bcomp,
+        void **bcf,
+        const int32_t *lens,
+        const int32_t *exps,
+        const int32_t *comps,
+        const void *cfs,
+        const int32_t *row_degs,
+        const uint32_t field_char,
+        const int32_t mon_order,
+        const mo_block_t * const blk,
+        const res_strat_t * const strat,
+        const res_grading_t * const grading,
+        const int32_t nr_vars,
+        const int32_t nr_rows,
+        const int32_t nr_gens,
+        const int32_t ht_size,
+        const int32_t nr_threads,
+        const int32_t max_nr_pairs,
+        const int32_t la_option,
+        const int32_t reduce_gb,
+        const int32_t info_level
+        )
+{
+    int64_t nterms = 0;
+    module_input_t mi;
+
+    *bld   = 0;
+    *blen  = NULL;
+    *bexp  = NULL;
+    *bcomp = NULL;
+    *bcf   = NULL;
+
+    if (module_gb_from_input(&mi, lens, exps, comps, cfs, row_degs,
+                field_char, mon_order, blk, strat, grading, nr_vars, nr_rows,
+                nr_gens, ht_size, nr_threads, max_nr_pairs, la_option,
+                reduce_gb, info_level)) {
+        return 0;
+    }
+
+    nterms = export_module_data(
+            bld, blen, bexp, bcomp, bcf, mallocp, mi.gb, mi.gb->ht, mi.st);
+
+    module_input_clear(&mi);
+
+    return nterms;
+}
+
+/* The single block order is the general one with no block description. */
 int64_t export_module_f4(
         void *(*mallocp) (size_t),
         int32_t *bld,
@@ -768,28 +838,10 @@ int64_t export_module_f4(
         const int32_t info_level
         )
 {
-    int64_t nterms = 0;
-    module_input_t mi;
-
-    *bld   = 0;
-    *blen  = NULL;
-    *bexp  = NULL;
-    *bcomp = NULL;
-    *bcf   = NULL;
-
-    if (module_gb_from_input(&mi, lens, exps, comps, cfs, row_degs,
-                field_char, mon_order, strat, grading, nr_vars, nr_rows,
-                nr_gens, ht_size, nr_threads, max_nr_pairs, la_option,
-                reduce_gb, info_level)) {
-        return 0;
-    }
-
-    nterms = export_module_data(
-            bld, blen, bexp, bcomp, bcf, mallocp, mi.gb, mi.gb->ht, mi.st);
-
-    module_input_clear(&mi);
-
-    return nterms;
+    return export_module_f4_blocks(mallocp, bld, blen, bexp, bcomp, bcf,
+            lens, exps, comps, cfs, row_degs, field_char, mon_order, NULL,
+            strat, grading, nr_vars, nr_rows, nr_gens, ht_size, nr_threads,
+            max_nr_pairs, la_option, reduce_gb, info_level);
 }
 
 /* --------------------------------------------------------------------- *
@@ -845,7 +897,7 @@ int64_t export_module_frame(
      * basis would carry redundant elements into level 1 and inflate every
      * level above it. */
     if (module_gb_from_input(&mi, lens, exps, comps, cfs, row_degs,
-                field_char, mon_order, strat, grading, nr_vars, nr_rows,
+                field_char, mon_order, NULL, strat, grading, nr_vars, nr_rows,
                 nr_gens, ht_size, nr_threads, max_nr_pairs, la_option,
                 1 /* reduce */, info_level)) {
         return 0;
@@ -1191,7 +1243,7 @@ static int64_t module_syz_of_input(
     }
 
     if (module_gb_from_input(&mi, lens2, exps2, comps2, cfs2, rdeg,
-                field_char, mon_order, strat, grading, nr_vars, nr2,
+                field_char, mon_order, NULL, strat, grading, nr_vars, nr2,
                 nr_gens, ht_size, nr_threads, max_nr_pairs, la_option,
                 1 /* reduce */, info_level)) {
         goto cleanup;
@@ -1424,7 +1476,7 @@ int64_t export_module_resolution(
     /* As for the frame: the lead terms have to be the minimal generators
      * of the module of lead terms, which is what reducing gives. */
     if (module_gb_from_input(&mi, lens, exps, comps, cfs, row_degs,
-                field_char, mon_order, strat, grading, nr_vars, nr_rows,
+                field_char, mon_order, NULL, strat, grading, nr_vars, nr_rows,
                 nr_gens, ht_size, nr_threads, max_nr_pairs, la_option,
                 1 /* reduce */, info_level)) {
         return 0;
@@ -1586,7 +1638,7 @@ int64_t export_module_betti(
     }
 
     if (module_gb_from_input(&mi, lens, exps, comps, cfs, row_degs,
-                field_char, mon_order, strat, grading, nr_vars, nr_rows,
+                field_char, mon_order, NULL, strat, grading, nr_vars, nr_rows,
                 nr_gens, ht_size, nr_threads, max_nr_pairs, la_option,
                 1 /* reduce */, info_level)) {
         return 0;
@@ -1869,7 +1921,7 @@ res_comp_t *res_comp_new(
     /* reduced, as for the frame: the lead terms have to be the minimal
      * generators of the module of lead terms */
     if (module_gb_from_input(&mi, lens, exps, comps, cfs, row_degs,
-                field_char, mon_order, strat, grading, nr_vars, nr_rows,
+                field_char, mon_order, NULL, strat, grading, nr_vars, nr_rows,
                 nr_gens, ht_size, nr_threads, max_nr_pairs, la_option,
                 1 /* reduce */, info_level)) {
         return NULL;

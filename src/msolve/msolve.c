@@ -2010,6 +2010,7 @@ static void free_msolve_trace_qq_initial_data(int *invalid_gens, md_t *st, prime
       }
     }
     free_trace(&(st->tr));
+    free_block_order(st);
     free(st);
     free(bs);
     free(nmod_params);
@@ -2146,6 +2147,7 @@ int msolve_trace_qq(mpz_param_t *mpz_paramp,
   /* all data is corrupt */
   if (res == -1) {
     fprintf(ERRSTREAM, "Invalid input generators, msolve now terminates.\n");
+    free_block_order(st);
     free(st);
     free(invalid_gens);
     return -3;
@@ -2159,6 +2161,7 @@ int msolve_trace_qq(mpz_param_t *mpz_paramp,
           max_nr_pairs, reset_ht, la_option, use_signatures, reduce_gb,
           prime_start, nr_primes, pbm_file, 0 /*truncate_lifting */,
           info_level)) {
+    free_block_order(st);
     free(st);
     return -3;
   }
@@ -4404,6 +4407,7 @@ restart:
             if (tbr != NULL) {
 	      free_basis(&tbr);
 	    }
+            free_block_order(st);
             free(st);
             st  = NULL;
             free_shared_hash_data(bht);
@@ -4661,6 +4665,7 @@ restart:
             if (tbr != NULL) {
                 free_basis(&tbr);
             }
+            free_block_order(st);
             free(st);
             st  = NULL;
 
@@ -4704,6 +4709,7 @@ restart:
                         initial_hts, nr_threads, max_pairs, update_ht,
                         la_option, use_signatures, 1, prime_start,
                         nr_primes, 0, info_level)) {
+                free_block_order(st);
                 free(st);
                 return -3;
             }
@@ -4884,6 +4890,7 @@ restart:
                         max_pairs, update_ht, la_option, use_signatures,
                         1, prime_start, nr_primes, 0, truncate_lifting,
                         info_level)) {
+                free_block_order(st);
                 free(st);
                 return -3;
             }

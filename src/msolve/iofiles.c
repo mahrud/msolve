@@ -187,8 +187,6 @@ static void print_msolve_polynomials_ff(
     hm_t *hm    = NULL;
 
     const len_t nv  = ht->nv;
-    const len_t ebl = ht->ebl;
-    const len_t evl = ht->evl;
 
     /* state context if full basis is printed */
     if (is_nf == 0 && from == 0 && to == bs->lml) {
@@ -204,14 +202,27 @@ static void print_msolve_polynomials_ff(
             fprintf(file, "%s, ", vnames[i]);
         }
         fprintf(file, "%s\n", vnames[nv-1]);
-        if (st->nev == 0) {
+        if (st->nbl == 1) {
             fprintf(file, "#monomial order:       graded reverse lexicographical\n");
-        } else {
+        } else if (st->nev > 0 && st->nbl == 2) {
             if (st->nev == 1) {
                 fprintf(file, "#monomial order:       eliminating first variable, blocks: graded reverse lexicographical\n");
             } else {
                 fprintf(file, "#monomial order:       eliminating first %d variables, blocks: graded reverse lexicographical\n", st->nev);
             }
+        } else {
+            fprintf(file, "#monomial order:       blocks of sizes ");
+            for (int32_t k = 0; k < st->nbl; ++k) {
+                fprintf(file, "%s%d", k > 0 ? ", " : "", st->bsz[k]);
+            }
+            fprintf(file, ", each graded reverse lexicographical\n");
+        }
+        if (st->bwt != NULL) {
+            fprintf(file, "#variable weights:     ");
+            for (int32_t k = 0; k < st->nvars; ++k) {
+                fprintf(file, "%s%d", k > 0 ? ", " : "", st->bwt[k]);
+            }
+            fprintf(file, "\n");
         }
         if (bs->lml == 1) {
             fprintf(file, "#length of basis:      1 element\n");
@@ -222,18 +233,7 @@ static void print_msolve_polynomials_ff(
     }
 
     int *evi    =   (int *)malloc((unsigned long)ht->nv * sizeof(int));
-    if (ebl == 0) {
-        for (i = 1; i < evl; ++i) {
-            evi[i-1]    =   i;
-        }
-    } else {
-        for (i = 1; i < ebl; ++i) {
-            evi[i-1]    =   i;
-        }
-        for (i = ebl+1; i < evl; ++i) {
-            evi[i-2]    =   i;
-        }
-    }
+    ht_variable_slots(ht, evi);
 
     if (lead_ideal_only != 0) {
         int ctr = 0;

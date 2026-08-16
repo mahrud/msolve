@@ -26,6 +26,7 @@
 #define GB_RES_H
 
 #include "data.h"
+#include "order.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -364,6 +365,15 @@ void res_deg_of_exponents(
 deg_t res_heft_of_exponents(
         const res_dgrp_t *g,
         const exp_t *exps
+        );
+
+/* Install the grading's variable weights on a hash table, or verify that
+ * a weighted block order already put the same ones there.  Call before
+ * the secondary hash tables are built, since they share vwt by pointer.
+ * Returns 0 on success. */
+int res_install_weights(
+        ht_t *ht,
+        const res_dgrp_t * const grp
         );
 
 /* --------------------------------------------------------------------- *
@@ -844,15 +854,59 @@ int res_hilbert_invariants(
  *  degree by degree schedules terminate.  With the standard grading the
  *  heft degree is the total degree and this is msolve's usual DRL.
  *
+ *  export_module_f4_blocks takes a block description on top of that (see
+ *  order.h), so the ring part of the module order can be a block grevlex
+ *  order with any number of blocks and per variable weights; NULL asks
+ *  for the single block order, which is what export_module_f4 passes.
+ *  The component key is unaffected -- the blocks refine only the ring
+ *  part -- so POT and TOP mean exactly what they meant before.
+ *
+ *  Weights are one notion, not two: if the block description carries
+ *  weights and the grading is not the standard one, the two have to
+ *  agree, and disagreeing is an error rather than a silent choice.
+ *
  *  Restrictions, all reported on stderr rather than assumed:
  *    - prime field of characteristic 0 < p < 2^31,
- *    - degree reverse lexicographic order (mon_order 0), no elimination
- *      block, since block orders and module orders are not combined yet,
+ *    - degree reverse lexicographic order (mon_order 0); blocks refine
+ *      DRL, so a block description does not combine with mon_order 1,
  *    - strat is checked by res_strat_check: its base is RES_MORD_POT or
  *      RES_MORD_TOP, and NULL asks for the default.  RES_MORD_SCHREYER
  *      needs per component base monomials that only the resolution engine
  *      can supply.
+ *
+ *  The frame, resolution and Betti entry points below keep the single
+ *  block order: their Schreyer lift is only implemented for it.
  * --------------------------------------------------------------------- */
+
+int64_t export_module_f4_blocks(
+        void *(*mallocp) (size_t),
+        /* return values */
+        int32_t *bld,      /* number of basis elements */
+        int32_t **blen,    /* number of terms of each basis element */
+        int32_t **bexp,    /* nr_vars exponents per term */
+        int32_t **bcomp,   /* 1-based component of each term */
+        void **bcf,        /* one int32_t coefficient per term */
+        /* input values */
+        const int32_t *lens,
+        const int32_t *exps,
+        const int32_t *comps,
+        const void *cfs,
+        const int32_t *row_degs, /* may be NULL */
+        const uint32_t field_char,
+        const int32_t mon_order,
+        const mo_block_t * const blk, /* NULL means one block */
+        const res_strat_t *strat,     /* NULL means the default  */
+        const res_grading_t *grading, /* NULL means the standard */
+        const int32_t nr_vars,
+        const int32_t nr_rows,
+        const int32_t nr_gens,
+        const int32_t ht_size,
+        const int32_t nr_threads,
+        const int32_t max_nr_pairs,
+        const int32_t la_option,
+        const int32_t reduce_gb,
+        const int32_t info_level
+        );
 
 int64_t export_module_f4(
         void *(*mallocp) (size_t),

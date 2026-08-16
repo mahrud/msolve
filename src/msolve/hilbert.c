@@ -1645,21 +1645,8 @@ build_matrixn_colon(int32_t *lmb, long dquot, int32_t bld,
 		    uint32_t * leftvector,
 		    uint32_t ** leftvectorsparam, long suppsize){
 
-  const len_t ebl = bht->ebl;
-  const len_t evl = bht->evl;
   int32_t *evi    =  (int *)malloc((unsigned long)nv * sizeof(int));
-  if (ebl == 0) {
-    for (long i = 1; i < evl; ++i) {
-      evi[i-1]    =   i;
-    }
-  } else {
-    for (long i = 1; i < ebl; ++i) {
-      evi[i-1]    =   i;
-    }
-    for (long i = ebl+1; i < evl; ++i) {
-      evi[i-2]    =   i;
-    }
-  }
+  ht_variable_slots(bht, evi);
   copy_extrapoly_in_vector(leftvector, dquot, lmb, 1,
 			   tbr, bht, evi, st, nv, maxdeg);
 
@@ -2084,21 +2071,8 @@ build_matrixn_colon_no_zero(int32_t *lmb, long dquot, int32_t bld,
 			    uint32_t * leftvector,
 			    uint32_t ** leftvectorsparam, long suppsize){
 
-  const len_t ebl = bht->ebl;
-  const len_t evl = bht->evl;
   int32_t *evi    =  (int *)malloc((unsigned long)nv * sizeof(int));
-  if (ebl == 0) {
-    for (long i = 1; i < evl; ++i) {
-      evi[i-1]    =   i;
-    }
-  } else {
-    for (long i = 1; i < ebl; ++i) {
-      evi[i-1]    =   i;
-    }
-    for (long i = ebl+1; i < evl; ++i) {
-      evi[i-2]    =   i;
-    }
-  }
+  ht_variable_slots(bht, evi);
   for (long i = 1; i < tbr->lml; i++) {
     len_t idx = tbr->lmps[i];
     len_t * hm  = tbr->hm[idx]+OFFSET;
@@ -3081,21 +3055,8 @@ static inline void build_matrixn_unstable_from_bs_trace_application(sp_matfglm_t
 								    const int nv,
 								    const long fc,
 								    const int thread_number){
-  const len_t ebl = ht->ebl;
-  const len_t evl = ht->evl;
   int32_t *evi    =  (int *)malloc((unsigned long)nv * sizeof(int));
-  if (ebl == 0) {
-    for (long i = 1; i < evl; ++i) {
-      evi[i-1]    =   i;
-    }
-  } else {
-    for (long i = 1; i < ebl; ++i) {
-      evi[i-1]    =   i;
-    }
-    for (long i = ebl+1; i < evl; ++i) {
-      evi[i-2]    =   i;
-    }
-  }
+  ht_variable_slots(ht, evi);
   bs_t *tbr;
   long count_not_lm = matrix->nnfs;
   if (count_not_lm) {
@@ -3116,6 +3077,7 @@ static inline void build_matrixn_unstable_from_bs_trace_application(sp_matfglm_t
       exit(1);
     }
     free(mul);
+    free_block_order(md);
     free(md);
   }
   long len0 = matrix->nrows;
@@ -3614,21 +3576,8 @@ static inline sp_matfglm_t * build_matrixn_unstable_from_bs_trace(int32_t **bdiv
     return NULL;
   }
 
-  const len_t ebl = ht->ebl;
-  const len_t evl = ht->evl;
   int32_t *evi    =  (int32_t *)malloc((unsigned long)nv * sizeof(int32_t));
-  if (ebl == 0) {
-    for (long i = 1; i < evl; ++i) {
-      evi[i-1]    =   i;
-    }
-  } else {
-    for (long i = 1; i < ebl; ++i) {
-      evi[i-1]    =   i;
-    }
-    for (long i = ebl+1; i < evl; ++i) {
-      evi[i-2]    =   i;
-    }
-  }
+  ht_variable_slots(ht, evi);
 
   *blens_extra_nf=(int32_t *) (malloc(sizeof(int32_t) * count_not_lm));
   int32_t* lens_extra_nf= *blens_extra_nf;
@@ -3668,6 +3617,7 @@ static inline sp_matfglm_t * build_matrixn_unstable_from_bs_trace(int32_t **bdiv
       exit(1);
     }
     free(mul);
+    free_block_order(md);
     free(md);
   }
   sp_matfglm_t *matrix ALIGNED32 = calloc(1, sizeof(sp_matfglm_t));
@@ -3844,8 +3794,8 @@ static inline int32_t *get_lm_from_bs(const bs_t * const bs, const ht_t * const 
   hm_t *dt;
   const len_t nelts = bs->lml;
   const int nv    = ht->nv;
-  const len_t ebl = ht->ebl;
-  const len_t evl = ht->evl;
+  int32_t evi[nv];
+  ht_variable_slots(ht, evi);
   int32_t *exp  = (int32_t *)malloc(
                                     (unsigned long)(nelts) * (unsigned long)(nv) * sizeof(int32_t));
   /* counters for lengths, exponents and coefficients */
@@ -3855,11 +3805,8 @@ static inline int32_t *get_lm_from_bs(const bs_t * const bs, const ht_t * const 
     const bl_t bi = bs->lmps[i];
 
     dt  = bs->hm[bi] + OFFSET;
-    for (len_t k = 1; k < ebl; ++k) {
-      exp[ce++] = (int32_t)ht->ev[dt[0]][k];
-    }
-    for (len_t k = ebl+1; k < evl; ++k) {
-      exp[ce++] = (int32_t)ht->ev[dt[0]][k];
+    for (len_t k = 0; k < nv; ++k) {
+      exp[ce++] = (int32_t)ht->ev[dt[0]][evi[k]];
     }
   }
   return exp;
@@ -3869,8 +3816,9 @@ static inline int32_t *get_lm_from_bs(const bs_t * const bs, const ht_t * const 
 static inline void get_lm_from_bs_trace(bs_t *bs, const ht_t *ht, int32_t *exp){
   hm_t *dt;
   const len_t nelts = bs->lml;
-  const len_t ebl = ht->ebl;
-  const len_t evl = ht->evl;
+  const len_t nv    = ht->nv;
+  int32_t evi[nv];
+  ht_variable_slots(ht, evi);
 
   /* counters for lengths, exponents and coefficients */
   int64_t ce = 0;
@@ -3879,11 +3827,8 @@ static inline void get_lm_from_bs_trace(bs_t *bs, const ht_t *ht, int32_t *exp){
     const bl_t bi = bs->lmps[i];
 
     dt  = bs->hm[bi] + OFFSET;
-    for (len_t k = 1; k < ebl; ++k) {
-      exp[ce++] = (int32_t)ht->ev[dt[0]][k];
-    }
-    for (len_t k = ebl+1; k < evl; ++k) {
-      exp[ce++] = (int32_t)ht->ev[dt[0]][k];
+    for (len_t k = 0; k < nv; ++k) {
+      exp[ce++] = (int32_t)ht->ev[dt[0]][evi[k]];
     }
   }
 }
@@ -3891,8 +3836,25 @@ static inline void get_lm_from_bs_trace(bs_t *bs, const ht_t *ht, int32_t *exp){
 static inline void get_lm_from_bs_trace_elim(bs_t *bs, const ht_t *ht, int32_t *exp,
                                              const len_t nelts){
   hm_t *dt;
-  const len_t ebl = ht->ebl;
-  const len_t evl = ht->evl;
+  const len_t nv    = ht->nv;
+  int32_t evi[nv];
+  ht_variable_slots(ht, evi);
+  /* The eliminated variables are exactly the first block, so writing the
+   * variables after it drops them.  That reading of "eliminated" is the
+   * two block order elim_block_len describes and nothing more: msolve's
+   * solving pipeline is entered only through core_msolve, which takes an
+   * elim_block_len rather than a block description, so a general block
+   * order can reach the engine only through libneogb's _blocks entry
+   * points, which nothing under src/msolve calls.  The check keeps that
+   * a fact rather than a hope. */
+  if (ht->nbl != 2) {
+    fprintf(ERRSTREAM, "The solving pipeline reads an elimination order "
+            "as two blocks, but the monomial order has %d.  General block "
+            "orders are supported for Gröbner basis computation and "
+            "export only.\n", (int)ht->nbl);
+    exit(1);
+  }
+  const len_t nelim = ht->bst[1] - 1;
 
   /* counters for lengths, exponents and coefficients */
   int64_t ce = 0;
@@ -3901,8 +3863,8 @@ static inline void get_lm_from_bs_trace_elim(bs_t *bs, const ht_t *ht, int32_t *
     const bl_t bi = bs->lmps[i];
 
     dt  = bs->hm[bi] + OFFSET;
-    for (len_t k = ebl+1; k < evl; ++k) {
-      exp[ce++] = (int32_t)ht->ev[dt[0]][k];
+    for (len_t k = nelim; k < nv; ++k) {
+      exp[ce++] = (int32_t)ht->ev[dt[0]][evi[k]];
     }
   }
 }

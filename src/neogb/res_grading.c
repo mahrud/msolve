@@ -775,3 +775,89 @@ deg_t res_heft_of_exponents(
     }
     return (deg_t)h;
 }
+
+/* Put the grading's variable weights on a hash table, or check that the
+ * weights already there agree with them.
+ *
+ * ht->vwt is a single array with a single meaning -- what each variable
+ * contributes to its block's degree slot -- so a weighted block order
+ * and a nonstandard grading are two ways of saying the same thing and
+ * have to say it the same way.  Whichever arrives first wins; the second
+ * one is checked against it rather than silently overwriting it, since
+ * disagreeing weights would leave the basis a Gröbner basis for neither
+ * order.
+ *
+ * Leaving vwt NULL under the standard grading is not an optimization but
+ * the guarantee that the unweighted path is the one it always was: every
+ * reader checks for NULL and takes the old branch.  It has to be in
+ * place before core_gba, since the secondary hash tables built in there
+ * share it by pointer.
+ *
+ * Returns 0 on success, 1 if the weights conflict or cannot be
+ * allocated. */
+int res_install_weights(
+        ht_t *ht,
+        const res_dgrp_t * const grp
+        )
+{
+    len_t i;
+
+    const len_t nv = ht->nv;
+
+    int unit_weights = 1;
+    for (i = 0; i < nv; ++i) {
+        if (grp->vhdeg[i] != 1) {
+            unit_weights = 0;
+            break;
+        }
+    }
+
+    int32_t *evi = (int32_t *)malloc((unsigned long)nv * sizeof(int32_t));
+    if (evi == NULL) {
+        return 1;
+    }
+    ht_variable_slots(ht, evi);
+
+    if (ht->vwt != NULL) {
+        /* A weighted block order got here first.  Under the standard
+         * grading it simply stands: weighting the *order* while grading
+         * in the usual way is a perfectly ordinary request, and the
+         * grading has nothing to contribute.  Only a grading that
+         * carries weights of its own can contradict it. */
+        if (unit_weights) {
+            free(evi);
+            return 0;
+        }
+        for (i = 0; i < nv; ++i) {
+            const deg_t w = grp->vhdeg[i];
+            if (ht->vwt[evi[i]] != w) {
+                fprintf(ERRSTREAM, "The monomial order weights variable %d "
+                        "by %d but the grading gives it heft degree %d.  "
+                        "These are the same weight, so they have to agree; "
+                        "pass one of them, not two.\n",
+                        (int)i, (int)ht->vwt[evi[i]], (int)w);
+                free(evi);
+                return 1;
+            }
+        }
+        free(evi);
+        return 0;
+    }
+
+    if (unit_weights) {
+        free(evi);
+        return 0;
+    }
+
+    ht->vwt = (deg_t *)calloc((unsigned long)ht->evl, sizeof(deg_t));
+    if (ht->vwt == NULL) {
+        free(evi);
+        return 1;
+    }
+    for (i = 0; i < nv; ++i) {
+        ht->vwt[evi[i]] = grp->vhdeg[i];
+    }
+
+    free(evi);
+    return 0;
+}

@@ -318,22 +318,9 @@ static inline void display_modpoly(FILE *file,
 
   ht_t *ht = modgbs->bht;
   const len_t nv  = ht->nv;
-  const len_t ebl = ht->ebl;
-  const len_t evl = ht->evl;
 
   int *evi    =   (int *)malloc((unsigned long)(ht->nv + 1) * sizeof(int));
-  if (ebl == 0) {
-    for (i = 1; i < evl; ++i) {
-      evi[i-1]    =   i;
-    }
-  } else {
-    for (i = 1; i < ebl; ++i) {
-      evi[i-1]    =   i;
-    }
-    for (i = ebl+1; i < evl; ++i) {
-      evi[i-2]    =   i;
-    }
-  }
+  ht_variable_slots(ht, evi);
   len_t len = modgbs->modpolys[pos]->len + 1;
   for(i = modgbs->modpolys[pos]->len-1; i > 0 ; i--){
     if(mpz_cmp_ui(modgbs->modpolys[pos]->cf_qq[2*i], 0)>0){
@@ -1680,21 +1667,8 @@ uint64_t export_results_from_groebner_qq(
     ht_t *ht = gb->bht;
     int *evi = NULL;
     if (print_gb == 2) {
-        const len_t ebl = ht->ebl;
-        const len_t evl = ht->evl;
         evi = (int *)malloc((unsigned long)(ht->nv + 1) * sizeof(int));
-        if (ebl == 0) {
-            for (len_t i = 1; i <= evl; ++i) {
-                evi[i-1]    =   i;
-            }
-        } else {
-            for (len_t i = 1; i < ebl; ++i) {
-                evi[i-1]    =   i;
-            }
-            for (len_t i = ebl + 1; i < evl; ++i) {
-                evi[i - 2] = i;
-            }
-        }
+        ht_variable_slots(ht, evi);
     }
 
     int64_t term = 0;
@@ -1813,6 +1787,7 @@ gb_modpoly_t *groebner_qq(
   free_mstrace(msd, md);
   free_basis_without_hash_table(&bs);
   free_trace(&md->tr);
+  free_block_order(md);
   free(md);
   md    = NULL;
 
@@ -1986,6 +1961,7 @@ int64_t export_groebner_qq(
     free_mstrace(msd, md);
     free_basis_without_hash_table(&bs);
     free_trace(&md->tr);
+    free_block_order(md);
     free(md);
     md = NULL;
     gb_modpoly_clear((*modgbsp));

@@ -118,7 +118,7 @@ static void convert_hashes_to_columns_sat(
 
     /* printf("hcm\n");
      * for (int ii=0; ii<j; ++ii) {
-     *     printf("hcm[%d] = %d | idx %u | deg %u |", ii, hcm[ii], hds[hcm[ii]].idx, sht->ev[hcm[ii]][DEG]+sht->ev[hcm[ii]][sht->ebl]);
+     *     printf("hcm[%d] = %d | idx %u | deg %u |", ii, hcm[ii], hds[hcm[ii]].idx, ht_total_degree(sht->ev[hcm[ii]], sht));
      *     for (int jj = 0; jj < sht->evl; ++jj) {
      *         printf("%d ", sht->ev[hcm[ii]][jj]);
      *     }
@@ -248,7 +248,7 @@ static void sba_convert_hashes_to_columns(
 
     /* printf("hcm\n");
      * for (int ii=0; ii<j; ++ii) {
-     *     printf("hcm[%d] = %d | idx %u | deg %u |", ii, hcm[ii], hds[hcm[ii]].idx, sht->ev[hcm[ii]][DEG]+sht->ev[hcm[ii]][sht->ebl]);
+     *     printf("hcm[%d] = %d | idx %u | deg %u |", ii, hcm[ii], hds[hcm[ii]].idx, ht_total_degree(sht->ev[hcm[ii]], sht));
      *     for (int jj = 0; jj < sht->evl; ++jj) {
      *         printf("%d ", sht->ev[hcm[ii]][jj]);
      *     }
@@ -341,7 +341,7 @@ static void convert_hashes_to_columns(
 
     /* printf("hcm\n");
     for (int ii=0; ii<j; ++ii) {
-        printf("hcm[%d] = %d | idx %u | deg %u |", ii, hcm[ii], hds[hcm[ii]].idx, sht->ev[hcm[ii]][DEG]+sht->ev[hcm[ii]][sht->ebl]);
+        printf("hcm[%d] = %d | idx %u | deg %u |", ii, hcm[ii], hds[hcm[ii]].idx, ht_total_degree(sht->ev[hcm[ii]], sht));
         for (int jj = 0; jj < sht->evl; ++jj) {
             printf("%d ", sht->ev[hcm[ii]][jj]);
         }
@@ -674,7 +674,7 @@ static void convert_sparse_matrix_rows_to_basis_elements(
             rows[i][j] = hcm[rows[i][j]];
         }
         deg = bht->hd[rows[i][OFFSET]].deg;
-        if (st->nev > 0) {
+        if (st->nbl > 1) {
             const len_t len = rows[i][LENGTH]+OFFSET;
             for (j = OFFSET+1; j < len; ++j) {
                 if (deg < bht->hd[rows[i][j]].deg) {
@@ -804,7 +804,7 @@ static void convert_sparse_matrix_rows_to_basis_elements_use_sht(
         row = rows[i];
         deg = sht->hd[hcm[rows[i][OFFSET]]].deg;
         const len_t len = rows[i][LENGTH]+OFFSET;
-        if (st->nev ==  0) {
+        if (st->nbl == 1) {
             for (j = OFFSET; j < len; ++j) {
                 row[j]  = hcm[row[j]];
             }

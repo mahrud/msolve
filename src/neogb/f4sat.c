@@ -41,18 +41,15 @@ static inline int is_pure_power(
     len_t i;
     len_t ctr = 0;
 
-    const len_t ebl = ht->ebl;
-    const len_t evl = ht->evl;
     const len_t nv  = ht->nv;
 
-    for (i = 1; i < ebl; ++i) {
-        if (ev[i] == 0) {
-            ctr++;
-        }
-    }
-    for (i = ebl+1; i < evl; ++i) {
-        if (ev[i] == 0) {
-            ctr++;
+    /* count the variables with exponent zero, stepping over the per
+     * block degree slots */
+    for (len_t b = 0; b < ht->nbl; ++b) {
+        for (i = ht->bst[b]+1; i < ht->bst[b+1]; ++i) {
+            if (ev[i] == 0) {
+                ctr++;
+            }
         }
     }
 
@@ -453,7 +450,7 @@ sat_restart:
                 sht, bht, h, etmp, sat->hm[j]);
         sat->hm[i][MULT] = qb[i];
         deg_t deg = bht->hd[sat->hm[i][OFFSET]].deg;
-        if (st->nev > 0) {
+        if (st->nbl > 1) {
             const len_t len = sat->hm[i][LENGTH]+OFFSET;
             for (j = OFFSET+1; j < len; ++j) {
                 if (deg < bht->hd[sat->hm[i][j]].deg) {
@@ -706,7 +703,7 @@ end_sat_step:
                                     sht->ev[sat->hm[i][j]], bht);
                         }
                         deg_t deg = bht->hd[sat->hm[i][OFFSET]].deg;
-                        if (st->nev > 0) {
+                        if (st->nbl > 1) {
                             const len_t len = sat->hm[i][LENGTH]+OFFSET;
                             for (j = OFFSET+1; j < len; ++j) {
                                 if (deg < bht->hd[sat->hm[i][j]].deg) {

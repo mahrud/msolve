@@ -105,15 +105,25 @@ struct hd_t
  * [deg, exp_v1, ..., exp_vn]
  * -> length is n+1
  *
- * 2. If we use a block elimination order with two blocks
- * of k variables and n-k variables
- * [deg_b1, exp_v1, ..., exp_vk, deg_b2, exp_vk+1, ..., exp_vn]
- * -> length is n+2
+ * 2. If we use a block order with k blocks of s_1, ..., s_k variables
+ * (s_1 + ... + s_k == n), each block ordered by the degree reverse
+ * lexicographical order and the blocks compared left to right:
+ * [deg_b1, exp_v1, ..., exp_vs1, deg_b2, ..., deg_bk, ..., exp_vn]
+ * -> length is n+k
  *
- *  In any of the above situations nv will be n.
- *  evl will be nv + 1 + (ebl != 0) where ebl is the number
- *  of variables in the first variable block + 1 (for the degree of
- *  this block) if we use an elimination block order, 0 otherwise.
+ *  In any of the above situations nv will be n and ht->nbl will be k,
+ *  so case 1 is just the k == 1 case of case 2 and evl is always
+ *  nv + nbl (plus one more slot in the module case below).
+ *
+ *  ht->bst is the block layout: bst[j] is the index of block j's degree
+ *  slot and bst[j]+1 ... bst[j+1]-1 are its variable slots, with
+ *  bst[0] == DEG == 0 and bst[nbl] one past the last variable slot.  The
+ *  degree slot of a block holds the sum of that block's exponents,
+ *  weighted by ht->vwt when a non-standard grading is in use.
+ *
+ *  Note that ev[DEG] is therefore only the *first* block's degree.  The
+ *  total degree of a monomial is the sum of all block degree slots and is
+ *  cached in ht->hd[].deg; use ht_total_degree() to compute it.
  *
  * 3. If the hash table represents monomials of a free module (needed for
  *    module Groebner bases, Schreyer frames and free resolutions) then a
@@ -163,14 +173,20 @@ struct ht_t
     hl_t eld;     /* load of exponent vector */
     hl_t esz;     /* size of exponent vector */
     hl_t hsz;     /* size of hash map, might be 2^32 */
-    len_t ebl;    /* elimination block length:
-                   * degree + #elimination variables,
-                   * 0 if no elimination order */
+    len_t nbl;    /* number of variable blocks, always >= 1;
+                   * nbl == 1 is the plain (non-block) case */
+    len_t *bst;   /* block starts, length nbl+1: bst[j] is the index of
+                   * block j's degree slot in ev, bst[j]+1 .. bst[j+1]-1
+                   * are its variable slots.  bst[0] is always DEG == 0
+                   * and bst[nbl] == nv + nbl is one past the last
+                   * variable slot, which is ht->cpos on a module table
+                   * and ht->evl otherwise.  See the layout above.
+                   * Shared by pointer with the secondary hash tables,
+                   * exactly like dm/dv/rn below. */
     int32_t mo;   /* monomial ordering: 0=DRL, 1=LEX */
     len_t nv;     /* number of variables */
-    len_t evl;    /* real length of exponent vector,
-                   * includes degree (or two degrees
-                   * if an elimination order is used) */
+    len_t evl;    /* real length of exponent vector, includes one degree
+                   * slot per block (and the component slot, if any) */
     sdm_t *dm;    /* divisor map for divisibility checks */
     len_t *dv;    /* variables for divmask */
     len_t ndv;    /* number of variables for divmask */
@@ -191,14 +207,15 @@ struct ht_t
                     * already folded into ev[DEG] of every monomial of
                     * that component; entry 0 is always 0 */
     deg_t *vwt;    /* heft degree of each variable, indexed by exponent
-                    * slot, so vwt[0] and vwt[cpos] are 0 and vwt[i+1] is
-                    * the weight of variable i; length evl.  NULL means
+                    * slot, so every degree slot bst[j] and the component
+                    * slot cpos carry weight 0 and a variable slot carries
+                    * that variable's weight; length evl.  NULL means
                     * every variable has weight one, which is msolve's
-                    * usual total degree and the only case before gradings
-                    * became a parameter -- every code path that reads
+                    * usual total degree -- every code path that reads
                     * this checks for NULL first, so the unweighted path
-                    * is untouched.  Only ever non-NULL on a module table
-                    * (see res.h). */
+                    * is untouched.  Set either by a module grading (see
+                    * res.h) or by a weighted block order.  Shared by
+                    * pointer with the secondary hash tables. */
 };
 
 /* S-pair types */
@@ -447,7 +464,17 @@ struct md_t
     int32_t homogeneous;
     uint32_t gfc; /* global field characteristic */
     uint32_t fc;
-    int32_t nev; /* number of elimination variables */
+    int32_t nev; /* number of elimination variables; this is the msolve
+                  * *solving* pipeline's notion of "drop the first nev
+                  * variables from the result" and is independent of the
+                  * block structure below, which describes the order.
+                  * The legacy elim_block_len entry points set both. */
+    int32_t nbl; /* number of variable blocks in the monomial order,
+                  * always >= 1; see the layout comment above */
+    int32_t *bsz; /* block sizes, length nbl, summing to nvars;
+                   * owned by md_t and freed with it */
+    int32_t *bwt; /* weight of each variable, length nvars, all >= 1, or
+                   * NULL for the standard grading; owned by md_t */
     int32_t mo; /* monomial ordering: 0=DRL, 1=LEX*/
     int32_t ncomp; /* number of components of the ambient free module,
                     * 0 for an ideal computation in the ring itself */

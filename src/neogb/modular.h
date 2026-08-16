@@ -23,6 +23,7 @@
 #define GB_TRACE_H
 
 #include "data.h"
+#include "order.h"
 
 trace_t *initialize_trace(
         const bs_t * const bs,
@@ -170,6 +171,35 @@ bs_t *f4sat_trace_application_phase(
         ht_t *lbht,                   /* local basis hash table, not shared */
         md_t *gst,                  /* global statistics */
         const uint32_t fc             /* characteristic of field */
+        );
+
+/* Multi modular Groebner basis over Q in the block order described by
+ * blk (see order.h); NULL falls back to the one or two block order that
+ * elim_block_len describes, which is what f4_trace_julia below passes. */
+int64_t f4_trace_julia_blocks(
+        int32_t *bld,   /* basis load */
+        int32_t **blen, /* length of each poly in basis */
+        int32_t **bexp, /* basis exponent vectors */
+        void **bcf,     /* coefficients of basis elements */
+        const int32_t *lens,
+        const int32_t *exps,
+        const void *cfs,
+        const uint32_t field_char,
+        const int32_t mon_order,
+        const int32_t elim_block_len,
+        const mo_block_t *blk,
+        const int32_t nr_vars,
+        const int32_t nr_gens,
+        const int32_t ht_size,
+        const int32_t nr_threads,
+        const int32_t max_nr_pairs,
+        const int32_t reset_hash_table,
+        const int32_t la_option,
+        const int32_t reduce_gb,
+        const uint32_t prime_start,
+        const int32_t nr_primes,
+        const int32_t pbm_file,
+        const int32_t info_level
         );
 
 int64_t f4_trace_julia(

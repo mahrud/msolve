@@ -23,6 +23,7 @@
 #define LIBNEOGB_H
 
 #include "data.h"
+#include "order.h"
 #include "res.h"
 #include "basis.h"
 #include "engine.h"
