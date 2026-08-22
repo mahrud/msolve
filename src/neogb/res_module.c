@@ -425,6 +425,7 @@ static int module_gb_from_input(
         const mo_block_t * const blk,
         const res_strat_t * const strat,
         const res_grading_t * const grading,
+        const res_stop_t * const stop,
         const int32_t nr_vars,
         const int32_t nr_rows,
         const int32_t nr_gens,
@@ -690,6 +691,49 @@ static int module_gb_from_input(
             initial_input_cmp, bht);
     normalize_initial_basis(bs, st->fc);
 
+    /* A degree ceiling.  The caller's multidegree is on the caller's own
+     * scale and the computation runs on the normalized one, so subtract
+     * what the rows were shifted by; and the schedule is by heft, so the
+     * ceiling that reaches the round loop is a heft degree.  See
+     * res_stop_t for why the coarsening is the safe direction.
+     *
+     * A ceiling at or below the shift leaves the round loop nothing it
+     * could ever select.  That is refused rather than answered with the
+     * input generators, because the only way to ask for it is to have the
+     * scale wrong -- forgetting the degree shift, or handing over a heft
+     * where a multidegree was wanted.
+     *
+     * And a ceiling only says what it appears to say about a *homogeneous*
+     * computation.  For inhomogeneous input the degree the round loop
+     * schedules by is a sugar degree that can fall -- which is what
+     * md->min_deg_in_first_deg_fall is there to notice -- so "complete
+     * through degree d" is not a true statement about the result.  Refused,
+     * rather than silently meaning something else. */
+    if (stop != NULL && stop->max_degree != NULL) {
+        const int64_t h = module_row_heft64(grp, stop->max_degree)
+            - module_row_heft64(grp, mi->degshift);
+        if (!st->homogeneous) {
+            fprintf(ERRSTREAM, "A degree limit needs homogeneous input: the "
+                    "degree an inhomogeneous computation schedules by is a "
+                    "sugar degree and can fall, so a ceiling on it does not "
+                    "mean the basis is complete through that degree.\n");
+            free(invalid_gens);
+            free_shared_hash_data(bht);
+            free_basis(&bs);
+            goto fail;
+        }
+        if (h <= 0) {
+            fprintf(ERRSTREAM, "The degree limit is at or below the degree "
+                    "of the lightest generator of the ambient free module, "
+                    "so no S-pair could be selected.\n");
+            free(invalid_gens);
+            free_shared_hash_data(bht);
+            free_basis(&bs);
+            goto fail;
+        }
+        st->max_gb_degree = (deg_t)(h > (int64_t)INT32_MAX ? INT32_MAX : h);
+    }
+
     int32_t err = 0;
     bs_t *gb = core_gba(bs, st, &err, (len_t)field_char);
 
@@ -775,6 +819,7 @@ int64_t export_module_f4_blocks(
         const mo_block_t * const blk,
         const res_strat_t * const strat,
         const res_grading_t * const grading,
+        const res_stop_t * const stop,
         const int32_t nr_vars,
         const int32_t nr_rows,
         const int32_t nr_gens,
@@ -796,7 +841,7 @@ int64_t export_module_f4_blocks(
     *bcf   = NULL;
 
     if (module_gb_from_input(&mi, lens, exps, comps, cfs, row_degs,
-                field_char, mon_order, blk, strat, grading, nr_vars, nr_rows,
+                field_char, mon_order, blk, strat, grading, stop, nr_vars, nr_rows,
                 nr_gens, ht_size, nr_threads, max_nr_pairs, la_option,
                 reduce_gb, info_level)) {
         return 0;
@@ -827,6 +872,7 @@ int64_t export_module_f4(
         const int32_t mon_order,
         const res_strat_t * const strat,
         const res_grading_t * const grading,
+        const res_stop_t * const stop,
         const int32_t nr_vars,
         const int32_t nr_rows,
         const int32_t nr_gens,
@@ -840,8 +886,8 @@ int64_t export_module_f4(
 {
     return export_module_f4_blocks(mallocp, bld, blen, bexp, bcomp, bcf,
             lens, exps, comps, cfs, row_degs, field_char, mon_order, NULL,
-            strat, grading, nr_vars, nr_rows, nr_gens, ht_size, nr_threads,
-            max_nr_pairs, la_option, reduce_gb, info_level);
+            strat, grading, stop, nr_vars, nr_rows, nr_gens, ht_size,
+            nr_threads, max_nr_pairs, la_option, reduce_gb, info_level);
 }
 
 /* --------------------------------------------------------------------- *
@@ -897,7 +943,7 @@ int64_t export_module_frame(
      * basis would carry redundant elements into level 1 and inflate every
      * level above it. */
     if (module_gb_from_input(&mi, lens, exps, comps, cfs, row_degs,
-                field_char, mon_order, NULL, strat, grading, nr_vars, nr_rows,
+                field_char, mon_order, NULL, strat, grading, NULL, nr_vars, nr_rows,
                 nr_gens, ht_size, nr_threads, max_nr_pairs, la_option,
                 1 /* reduce */, info_level)) {
         return 0;
@@ -1129,6 +1175,7 @@ static int64_t module_syz_of_input(
         const int32_t mon_order,
         const res_strat_t * const strat,
         const res_grading_t * const grading,
+        const res_stop_t * const stop,
         const int32_t nr_vars,
         const int32_t nr_rows,
         const int32_t nr_gens,
@@ -1243,7 +1290,7 @@ static int64_t module_syz_of_input(
     }
 
     if (module_gb_from_input(&mi, lens2, exps2, comps2, cfs2, rdeg,
-                field_char, mon_order, NULL, strat, grading, nr_vars, nr2,
+                field_char, mon_order, NULL, strat, grading, stop, nr_vars, nr2,
                 nr_gens, ht_size, nr_threads, max_nr_pairs, la_option,
                 1 /* reduce */, info_level)) {
         goto cleanup;
@@ -1422,6 +1469,7 @@ int64_t export_module_resolution(
         const int32_t mon_order,
         const res_strat_t * const strat,
         const res_grading_t * const grading,
+        const res_stop_t * const stop,
         const int32_t nr_vars,
         const int32_t nr_rows,
         const int32_t nr_gens,
@@ -1464,9 +1512,9 @@ int64_t export_module_resolution(
         }
         return module_syz_of_input(mallocp, nlevels, ranks, degs,
                 dlen, dexp, dcomp, dcf, lens, exps, comps, cfs, row_degs,
-                field_char, mon_order, strat, grading, nr_vars, nr_rows,
-                nr_gens, ht_size, nr_threads, max_nr_pairs, la_option,
-                info_level, max_level == 0 ? 2 : max_level);
+                field_char, mon_order, strat, grading, stop, nr_vars,
+                nr_rows, nr_gens, ht_size, nr_threads, max_nr_pairs,
+                la_option, info_level, max_level == 0 ? 2 : max_level);
     }
     if (syz_of != RES_SYZ_OF_GB) {
         fprintf(ERRSTREAM, "Unknown syzygy flavour %d.\n", syz_of);
@@ -1476,7 +1524,7 @@ int64_t export_module_resolution(
     /* As for the frame: the lead terms have to be the minimal generators
      * of the module of lead terms, which is what reducing gives. */
     if (module_gb_from_input(&mi, lens, exps, comps, cfs, row_degs,
-                field_char, mon_order, NULL, strat, grading, nr_vars, nr_rows,
+                field_char, mon_order, NULL, strat, grading, stop, nr_vars, nr_rows,
                 nr_gens, ht_size, nr_threads, max_nr_pairs, la_option,
                 1 /* reduce */, info_level)) {
         return 0;
@@ -1638,7 +1686,7 @@ int64_t export_module_betti(
     }
 
     if (module_gb_from_input(&mi, lens, exps, comps, cfs, row_degs,
-                field_char, mon_order, NULL, strat, grading, nr_vars, nr_rows,
+                field_char, mon_order, NULL, strat, grading, NULL, nr_vars, nr_rows,
                 nr_gens, ht_size, nr_threads, max_nr_pairs, la_option,
                 1 /* reduce */, info_level)) {
         return 0;
@@ -1921,7 +1969,7 @@ res_comp_t *res_comp_new(
     /* reduced, as for the frame: the lead terms have to be the minimal
      * generators of the module of lead terms */
     if (module_gb_from_input(&mi, lens, exps, comps, cfs, row_degs,
-                field_char, mon_order, NULL, strat, grading, nr_vars, nr_rows,
+                field_char, mon_order, NULL, strat, grading, NULL, nr_vars, nr_rows,
                 nr_gens, ht_size, nr_threads, max_nr_pairs, la_option,
                 1 /* reduce */, info_level)) {
         return NULL;

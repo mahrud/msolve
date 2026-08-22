@@ -659,7 +659,7 @@ static void blk_test_module_rank_one(
         const int64_t mterms = export_module_f4_blocks(malloc,
                 &mbld, &mblen, &mbexp, &mbcomp, &mbcf,
                 cyc_lens, cyc_exps, comps, cfs, NULL /* row degrees */,
-                BLK_FC, 0 /* drl */, &blks[i], &strat, NULL /* grading */,
+                BLK_FC, 0 /* drl */, &blks[i], &strat, NULL /* grading */, NULL /* stop */,
                 4 /* nvars */, 1 /* nrows */, 4 /* ngens */,
                 12 /* ht size */, 1 /* threads */, 0 /* max pairs */,
                 2 /* la */, 1 /* reduce */, 0 /* info */);
@@ -731,7 +731,7 @@ static void blk_test_module_blocks_take_effect(
         nterms[i] = export_module_f4_blocks(malloc,
                 &bld[i], &blen[i], &bexp[i], &bcomp[i], &bcf[i],
                 lens, exps, comps, cfs, NULL,
-                BLK_FC, 0, which[i], &strat, NULL,
+                BLK_FC, 0, which[i], &strat, NULL, NULL /* stop */,
                 4, 2 /* nrows */, 3, 12, 1, 0, 2, 1, 0);
     }
 
@@ -797,7 +797,7 @@ static void blk_test_module_weight_conflict(
                 &bld, &blen, &bexp, &bcomp, &bcf,
                 lens, exps, comps, cfs, NULL,
                 BLK_FC, 0, &blk, NULL /* default strategy */,
-                cases[i].grading, 4, 1, 2, 12, 1, 0, 2, 1, 0);
+                cases[i].grading, NULL /* stop */, 4, 1, 2, 12, 1, 0, 2, 1, 0);
 
         BLK_CHECK((nterms > 0) == cases[i].want_ok, cases[i].what);
 

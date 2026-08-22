@@ -388,8 +388,13 @@ static int32_t initialize_f4(
         bs->ld = md->ngens;
     }
 
-    /* TODO: make this a command line argument */
-    md->max_gb_degree = INT32_MAX;
+    /* A degree ceiling the caller set on the global md_t survives
+     * copy_meta_data and is honoured here; everything else means none.
+     * symbol.c ends the round loop as soon as the minimal degree left in
+     * the pair set exceeds it, so the basis that comes back is complete
+     * through the ceiling and says nothing above it.
+     * TODO: make this a command line argument as well */
+    md->max_gb_degree = gmd->max_gb_degree > 0 ? gmd->max_gb_degree : INT32_MAX;
 
     /* link tracer into basis */
     if (md->trace_level == LEARN_TRACER) {

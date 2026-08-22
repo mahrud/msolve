@@ -282,7 +282,7 @@ static void res_test_module_gb_rank_one(
     const int64_t mterms = export_module_f4(malloc,
             &mbld, &mblen, &mbexp, &mbcomp, &mbcf,
             lens, exps, comps, cfs_b, NULL /* row degrees */,
-            fc, 0 /* drl */, res_strat_p(module_order), NULL,
+            fc, 0 /* drl */, res_strat_p(module_order), NULL, NULL /* stop */,
             3 /* nvars */, 1 /* nrows */, 3 /* ngens */,
             12 /* ht size */, 1 /* threads */, 0 /* max pairs */,
             2 /* la */, 1 /* reduce */, 0 /* info */);
@@ -346,7 +346,7 @@ static void res_test_module_gb_split_components(
     const int64_t nterms = export_module_f4(malloc,
             &bld, &blen, &bexp, &bcomp, &bcf,
             lens, exps, comps, cfs, NULL,
-            fc, 0, res_strat_p(RES_MORD_POT), NULL,
+            fc, 0, res_strat_p(RES_MORD_POT), NULL, NULL /* stop */,
             3 /* nvars */, 2 /* nrows */, 3 /* ngens */,
             12, 1, 0, 2, 1, 0);
 
@@ -390,7 +390,7 @@ static void res_test_module_gb_rank_two(
     const int64_t nterms = export_module_f4(malloc,
             &bld, &blen, &bexp, &bcomp, &bcf,
             lens, exps, comps, cfs, NULL,
-            fc, 0, res_strat_p(RES_MORD_POT), NULL,
+            fc, 0, res_strat_p(RES_MORD_POT), NULL, NULL /* stop */,
             3 /* nvars */, 2 /* nrows */, 2 /* ngens */,
             12, 1, 0, 2, 1, 0);
 
@@ -482,7 +482,7 @@ static void res_test_classical_resolutions(
     const int64_t tc_nterms = export_module_f4(malloc,
             &tc_bld, &tc_blen, &tc_bexp, &tc_bcomp, &tc_bcf,
             tc_lens, tc_exps, tc_comps, tc_cfs, tc_row_degs,
-            fc, 0, res_strat_p(RES_MORD_POT), NULL, 4, 1, 3, 12, 1, 0, 2, 1, 0);
+            fc, 0, res_strat_p(RES_MORD_POT), NULL, NULL /* stop */, 4, 1, 3, 12, 1, 0, 2, 1, 0);
 
     const int tc_shape_ok = tc_bld == 3 && tc_nterms == 6
         && tc_blen != NULL && tc_bexp != NULL
@@ -525,7 +525,7 @@ static void res_test_classical_resolutions(
     const int64_t hb_nterms = export_module_f4(malloc,
             &hb_bld, &hb_blen, &hb_bexp, &hb_bcomp, &hb_bcf,
             hb_lens, hb_exps, hb_comps, hb_cfs, hb_row_degs,
-            fc, 0, res_strat_p(RES_MORD_POT), NULL, 4, 3, 2, 12, 1, 0, 2, 1, 0);
+            fc, 0, res_strat_p(RES_MORD_POT), NULL, NULL /* stop */, 4, 3, 2, 12, 1, 0, 2, 1, 0);
 
     const int hb_shape_ok = hb_bld == 3 && hb_nterms == 10
         && hb_blen != NULL && hb_bexp != NULL
@@ -572,7 +572,7 @@ static void res_test_classical_resolutions(
     const int64_t cat_nterms = export_module_f4(malloc,
             &cat_bld, &cat_blen, &cat_bexp, &cat_bcomp, &cat_bcf,
             cat_lens, cat_exps, cat_comps, cat_cfs, cat_row_degs,
-            fc, 0, res_strat_p(RES_MORD_POT), NULL, 4, 2, 3, 12, 1, 0, 2, 1, 0);
+            fc, 0, res_strat_p(RES_MORD_POT), NULL, NULL /* stop */, 4, 2, 3, 12, 1, 0, 2, 1, 0);
 
     const int cat_shape_ok = cat_bld == 6 && cat_nterms == 12
         && cat_blen != NULL && cat_bexp != NULL
@@ -625,7 +625,7 @@ static void res_test_module_gb_rejects_bad_input(
                 "res_selftest: three module input errors are expected next\n");
     }
     RES_CHECK(export_module_f4(malloc, &bld, &blen, &bexp, &bcomp, &bcf,
-                lens, exps, bad_comps, cfs, NULL, 32003, 0, res_strat_p(RES_MORD_POT), NULL,
+                lens, exps, bad_comps, cfs, NULL, 32003, 0, res_strat_p(RES_MORD_POT), NULL, NULL /* stop */,
                 3, 2, 1, 12, 1, 0, 2, 1, 0) == 0,
             "an out of range component is rejected");
     RES_CHECK(blen == NULL && bexp == NULL && bcomp == NULL && bcf == NULL,
@@ -633,13 +633,13 @@ static void res_test_module_gb_rejects_bad_input(
 
     RES_CHECK(export_module_f4(malloc, &bld, &blen, &bexp, &bcomp, &bcf,
                 lens, exps, ok_comps, cfs, NULL, 32003, 0,
-                res_strat_p(RES_MORD_SCHREYER), NULL,
+                res_strat_p(RES_MORD_SCHREYER), NULL, NULL /* stop */,
                 3, 2, 1, 12, 1, 0, 2, 1, 0) == 0,
             "the Schreyer order is refused as a *base* order");
 
     RES_CHECK(export_module_f4(malloc, &bld, &blen, &bexp, &bcomp, &bcf,
                 lens, exps, ok_comps, cfs, NULL, 0 /* char 0 */, 0,
-                res_strat_p(RES_MORD_POT), NULL, 3, 2, 1, 12, 1, 0, 2, 1, 0) == 0,
+                res_strat_p(RES_MORD_POT), NULL, NULL /* stop */, 3, 2, 1, 12, 1, 0, 2, 1, 0) == 0,
             "characteristic zero is refused");
 }
 
@@ -1623,7 +1623,7 @@ struct res_res_t
     int32_t *cfs;   /* the working copy msolve reduced in place */
 };
 
-static int64_t res_run_resolution(
+static int64_t res_run_resolution_stop(
         res_res_t *r,
         const int32_t *lens,
         const int32_t *exps,
@@ -1635,7 +1635,9 @@ static int64_t res_run_resolution(
         const int32_t ngens,
         const int32_t max_level,
         const int32_t syz_of,
-        const res_strat_t * const strat
+        const res_strat_t * const strat,
+        const res_grading_t * const grading,
+        const res_stop_t * const stop
         )
 {
     int32_t i, nt = 0;
@@ -1651,13 +1653,32 @@ static int64_t res_run_resolution(
     r->nterms = export_module_resolution(malloc, &r->nlv, &r->ranks,
             &r->degs, &r->dlen, &r->dexp, &r->dcomp, &cf,
             lens, exps, comps, r->cfs, row_degs, RES_FC, 0 /* drl */,
-            strat, NULL, nv, nrows, ngens, max_level, syz_of,
+            strat, grading, stop, nv, nrows, ngens, max_level, syz_of,
             1 /* verify d o d = 0 exactly */,
             12 /* ht size */, 1 /* threads */, 0 /* max pairs */,
             2 /* la */, 0 /* info */);
     r->dcf = (int32_t *)cf;
 
     return r->nterms;
+}
+
+static int64_t res_run_resolution(
+        res_res_t *r,
+        const int32_t *lens,
+        const int32_t *exps,
+        const int32_t *comps,
+        const int32_t *cfs_src,
+        const int32_t *row_degs,
+        const int32_t nv,
+        const int32_t nrows,
+        const int32_t ngens,
+        const int32_t max_level,
+        const int32_t syz_of,
+        const res_strat_t * const strat
+        )
+{
+    return res_run_resolution_stop(r, lens, exps, comps, cfs_src, row_degs,
+            nv, nrows, ngens, max_level, syz_of, strat, NULL, NULL);
 }
 
 static void res_free_resolution(
@@ -2240,6 +2261,392 @@ static void res_test_syz_of_input_is_a_basis_not_a_minimal_one(
             "a Gröbner basis of the syzygy module, so 3 rather than 2",
             lens, exps, comps, cfs, NULL, 4, 1, 3, 2, RES_SYZ_OF_INPUT,
             ranks, degs);
+}
+
+/* --- stopping conditions --------------------------------------------- *
+ *
+ *  res_stop_t, one field at a time.  The references here are msolve's own
+ *  untruncated answers rather than tables, so the tests stay honest if the
+ *  corpus examples move; what is hard coded is only the *relation* between
+ *  a truncated run and a complete one, which is the contract.
+ * --------------------------------------------------------------------- */
+
+typedef struct res_mgb_t res_mgb_t;
+struct res_mgb_t
+{
+    int32_t  bld;
+    int32_t *blen;
+    int32_t *bexp;
+    int32_t *bcomp;
+    int32_t *bcf;
+    int64_t  nterms;
+    int32_t *cfs;   /* the working copy msolve reduced in place */
+};
+
+static int64_t res_run_module_gb(
+        res_mgb_t *g,
+        const int32_t *lens,
+        const int32_t *exps,
+        const int32_t *comps,
+        const int32_t *cfs_src,
+        const int32_t *row_degs,
+        const int32_t nv,
+        const int32_t nrows,
+        const int32_t ngens,
+        const res_grading_t * const grading,
+        const res_stop_t * const stop
+        )
+{
+    int32_t i, nt = 0;
+    void *cf = NULL;
+
+    memset(g, 0, sizeof(res_mgb_t));
+    for (i = 0; i < ngens; ++i) {
+        nt += lens[i];
+    }
+    g->cfs = (int32_t *)malloc((unsigned long)nt * sizeof(int32_t));
+    memcpy(g->cfs, cfs_src, (unsigned long)nt * sizeof(int32_t));
+
+    g->nterms = export_module_f4(malloc, &g->bld, &g->blen, &g->bexp,
+            &g->bcomp, &cf, lens, exps, comps, g->cfs, row_degs,
+            RES_FC, 0 /* drl */, res_strat_p(RES_MORD_POT), grading, stop,
+            nv, nrows, ngens, 12 /* ht size */, 1 /* threads */,
+            0 /* max pairs */, 2 /* la */, 1 /* reduce */, 0 /* info */);
+    g->bcf = (int32_t *)cf;
+
+    return g->nterms;
+}
+
+static void res_free_module_gb(
+        res_mgb_t *g
+        )
+{
+    void *cf = g->bcf;
+    free_module_f4_result_data(free, &g->blen, &g->bexp, &g->bcomp, &cf);
+    g->bcf = NULL;
+    free(g->cfs);
+    g->cfs = NULL;
+}
+
+/* Element k of a basis, as an offset into the flat term arrays. */
+static int64_t res_gb_offset(
+        const res_mgb_t * const g,
+        const int32_t k
+        )
+{
+    int64_t o = 0;
+    int32_t i;
+
+    for (i = 0; i < k; ++i) {
+        o += g->blen[i];
+    }
+    return o;
+}
+
+/* Whether element a of one basis and element b of another are the same
+ * element of the free module, term for term. */
+static int res_gb_elements_agree(
+        const res_mgb_t * const x,
+        const int32_t a,
+        const res_mgb_t * const y,
+        const int32_t b,
+        const int32_t nv
+        )
+{
+    const int32_t len = x->blen[a];
+    const int64_t oa  = res_gb_offset(x, a);
+    const int64_t ob  = res_gb_offset(y, b);
+    int64_t t;
+
+    if (len != y->blen[b]) {
+        return 0;
+    }
+    for (t = 0; t < len; ++t) {
+        int32_t c;
+        if (x->bcomp[oa+t] != y->bcomp[ob+t]
+                || x->bcf[oa+t] != y->bcf[ob+t]) {
+            return 0;
+        }
+        for (c = 0; c < nv; ++c) {
+            if (x->bexp[(oa+t)*nv + c] != y->bexp[(ob+t)*nv + c]) {
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
+/* The heft degree of element k, read off its lead term: the input is
+ * homogeneous, so any term would do. */
+static int32_t res_gb_degree(
+        const res_mgb_t * const g,
+        const int32_t k,
+        const int32_t nv,
+        const int32_t * const vdegs, /* NULL means the standard grading */
+        const int32_t * const heft
+        )
+{
+    const int64_t o = res_gb_offset(g, k);
+    int32_t c, d = 0;
+
+    for (c = 0; c < nv; ++c) {
+        const int32_t e = g->bexp[o*nv + c];
+        if (vdegs == NULL) {
+            d += e;
+        } else {
+            /* one weight per variable, folded through the heft */
+            int32_t j, w = 0;
+            for (j = 0; j < 2; ++j) {
+                w += heft[j] * vdegs[c*2 + j];
+            }
+            d += e * w;
+        }
+    }
+    return d;
+}
+
+/* The whole point of a ceiling: what a truncated run has in hand when it
+ * stops is exactly the part of the complete basis it had reached.  F4
+ * selects S-pairs by degree, and for homogeneous input a term of degree d
+ * can only be reduced by a lead term of degree at most d, so the final
+ * interreduction cannot tell the two runs apart either. */
+static void res_check_degree_limit(
+        const char *what,
+        const int32_t *lens,
+        const int32_t *exps,
+        const int32_t *comps,
+        const int32_t *cfs,
+        const int32_t nv,
+        const int32_t ngens,
+        const res_grading_t * const grading,
+        const int32_t *vdegs, /* NULL, or grading->degs again for the test */
+        const int32_t *heft
+        )
+{
+    res_mgb_t full;
+    int32_t i, k, d, dmin = INT32_MAX, dmax = -1;
+
+    if (res_run_module_gb(&full, lens, exps, comps, cfs, NULL,
+                nv, 1, ngens, grading, NULL) <= 0) {
+        RES_CHECK(0, what);
+        return;
+    }
+
+    for (k = 0; k < full.bld; ++k) {
+        const int32_t dk = res_gb_degree(&full, k, nv, vdegs, heft);
+        if (dk < dmin) { dmin = dk; }
+        if (dk > dmax) { dmax = dk; }
+    }
+    RES_CHECK(dmax > dmin, what);
+
+    for (d = dmin; d <= dmax; ++d) {
+        /* the ceiling is a multidegree; the one used here is d times the
+         * multidegree of the first variable, whose heft is d when the
+         * grading is standard and the caller's own scale otherwise */
+        int32_t md[RES_MTAB_MAXLEN];
+        res_stop_t stop = res_stop_none();
+        res_mgb_t part;
+        int32_t nexp = 0;
+        int ok = 1;
+
+        memset(md, 0, sizeof(md));
+        if (grading == NULL) {
+            md[0] = d;
+        } else {
+            for (i = 0; i < 2; ++i) {
+                md[i] = d * vdegs[i]; /* deg of x_1^d, so heft d * heft(x_1) */
+            }
+        }
+        stop.max_degree = md;
+
+        if (res_run_module_gb(&part, lens, exps, comps, cfs, NULL,
+                    nv, 1, ngens, grading, &stop) <= 0) {
+            RES_CHECK(0, "a run under a degree ceiling produced a basis");
+            res_free_module_gb(&full);
+            return;
+        }
+
+        for (k = 0; k < full.bld; ++k) {
+            if (res_gb_degree(&full, k, nv, vdegs, heft) <= d) {
+                nexp++;
+            }
+        }
+        RES_CHECK(part.bld == nexp, "a degree ceiling keeps exactly the "
+                "elements of the complete basis that are of no greater "
+                "degree");
+
+        for (k = 0; k < part.bld; ++k) {
+            int found = 0;
+            if (res_gb_degree(&part, k, nv, vdegs, heft) > d) {
+                ok = 0;
+            }
+            for (i = 0; i < full.bld && !found; ++i) {
+                found = res_gb_elements_agree(&part, k, &full, i, nv);
+            }
+            if (!found) {
+                ok = 0;
+            }
+        }
+        RES_CHECK(ok, "every element of a truncated basis is an element of "
+                "the complete one, of degree within the ceiling");
+
+        res_free_module_gb(&part);
+    }
+
+    res_free_module_gb(&full);
+}
+
+static void res_test_gb_degree_limit(
+        void
+        )
+{
+    /* x1^2 + x2*x3, x2^2 + x1*x3, x3^2 + x1*x2, whose basis reaches
+     * degree 3 */
+    const int32_t lens[3] = {2, 2, 2};
+    const int32_t exps[18] = {
+        2,0,0,  0,1,1,
+        0,2,0,  1,0,1,
+        0,0,2,  1,1,0
+    };
+    const int32_t cfs[6]   = {1, 1, 1, 1, 1, 1};
+    const int32_t comps[6] = {1, 1, 1, 1, 1, 1};
+
+    res_check_degree_limit("the basis of three quadrics spans more than one "
+            "degree, so a ceiling has something to cut",
+            lens, exps, comps, cfs, 3, 3, NULL, NULL, NULL);
+}
+
+/* The ceiling is a multidegree and is honoured as its heft, which is the
+ * coarsening res_stop_t documents.  Here the heft is (1,2) rather than
+ * (1,1), so a ceiling that is small in the first coordinate and one that
+ * is small in the second are *not* interchangeable -- only their hefts
+ * matter, and the test below pins that down by asking for two different
+ * multidegrees of the same heft and demanding the same answer. */
+static void res_test_gb_degree_limit_multigraded(
+        void
+        )
+{
+    /* R = k[x,y,z,w] with deg x = deg z = (1,0) and deg y = deg w = (0,1),
+     * hefted by (1,2); I = (xy, zw, xw - zy) is bihomogeneous of
+     * multidegree (1,1) and heft degree 3 */
+    const int32_t vdegs[8] = {1,0,  0,1,  1,0,  0,1};
+    const int32_t heft[2]  = {1, 2};
+    const res_grading_t grading = {2, 0, NULL, vdegs, heft};
+
+    const int32_t lens[3]  = {1, 1, 2};
+    const int32_t exps[16] = {
+        1,1,0,0,
+        0,0,1,1,
+        1,0,0,1,  0,1,1,0
+    };
+    const int32_t cfs[4]   = {1, 1, 1, RES_FC-1};
+    const int32_t comps[4] = {1, 1, 1, 1};
+
+    res_check_degree_limit("a hefted Z^2 grading truncates by heft degree",
+            lens, exps, comps, cfs, 4, 3, &grading, vdegs, heft);
+
+    /* Two ceilings of the same heft must truncate at the same place, and
+     * the heft picked here is one below the top degree of the complete
+     * basis, so both of them really do cut something. */
+    res_mgb_t full;
+    int32_t k, dmax = -1;
+    if (res_run_module_gb(&full, lens, exps, comps, cfs, NULL,
+                4, 1, 3, &grading, NULL) <= 0) {
+        RES_CHECK(0, "the multigraded example has a basis to truncate");
+        return;
+    }
+    for (k = 0; k < full.bld; ++k) {
+        const int32_t dk = res_gb_degree(&full, k, 4, vdegs, heft);
+        if (dk > dmax) { dmax = dk; }
+    }
+
+    /* the heft is (1,2), so (h,0) and (h-2,1) are different multidegrees
+     * of the same heft h */
+    const int32_t h  = dmax - 1;
+    const int32_t a[2] = {h, 0};
+    const int32_t b[2] = {h - 2, 1};
+    res_stop_t sa = res_stop_none(), sb = res_stop_none();
+    res_mgb_t ga, gb;
+    sa.max_degree = a;
+    sb.max_degree = b;
+
+    const int64_t na = res_run_module_gb(&ga, lens, exps, comps, cfs, NULL,
+            4, 1, 3, &grading, &sa);
+    const int64_t nb = res_run_module_gb(&gb, lens, exps, comps, cfs, NULL,
+            4, 1, 3, &grading, &sb);
+
+    RES_CHECK(h >= 2 && na > 0 && ga.bld < full.bld,
+            "a ceiling one heft degree below the top of the basis cuts "
+            "something");
+    RES_CHECK(na > 0 && na == nb && ga.bld == gb.bld,
+            "two ceilings of the same heft truncate at the same place");
+    if (na > 0 && na == nb && ga.bld == gb.bld) {
+        int ok = 1;
+        for (k = 0; k < ga.bld; ++k) {
+            if (!res_gb_elements_agree(&ga, k, &gb, k, 4)) {
+                ok = 0;
+            }
+        }
+        RES_CHECK(ok, "and produce the same basis term for term");
+    }
+
+    res_free_module_gb(&ga);
+    res_free_module_gb(&gb);
+    res_free_module_gb(&full);
+}
+
+/* A ceiling at or below the degree shift of the ambient free module leaves
+ * the round loop nothing it could select, and the only way to ask for one
+ * is to have the scale wrong.  It is refused rather than answered. */
+static void res_test_gb_degree_limit_rejects_bad_scale(
+        void
+        )
+{
+    const int32_t lens[2]  = {1, 1};
+    const int32_t exps[6]  = {1,0,0,  0,1,0};
+    const int32_t cfs[2]   = {1, 1};
+    const int32_t comps[2] = {1, 1};
+    const int32_t rd[1]    = {5}; /* R(-5), so the shift is 5 */
+
+    const int32_t at[1]  = {5};
+    const int32_t under[1] = {4};
+    res_stop_t sa = res_stop_none(), su = res_stop_none();
+    res_mgb_t ga, gu;
+    sa.max_degree = at;
+    su.max_degree = under;
+
+    /* x + 1 is not homogeneous, so its schedule is by sugar degree */
+    const int32_t ilens[2]  = {2, 1};
+    const int32_t iexps[9]  = {1,0,0,  0,0,0,  0,1,0};
+    const int32_t icfs[3]   = {1, 1, 1};
+    const int32_t icomps[3] = {1, 1, 1};
+    const int32_t two[1]    = {2};
+    res_stop_t si = res_stop_none();
+    res_mgb_t gi;
+    si.max_degree = two;
+
+    if (res_st_verbose > 0) {
+        fprintf(VERBSTREAM,
+                "res_selftest: three degree limit errors are expected next\n");
+    }
+    RES_CHECK(res_run_module_gb(&ga, lens, exps, comps, cfs, rd,
+                3, 1, 2, NULL, &sa) == 0,
+            "a ceiling at the degree shift is refused");
+    RES_CHECK(res_run_module_gb(&gu, lens, exps, comps, cfs, rd,
+                3, 1, 2, NULL, &su) == 0,
+            "a ceiling below the degree shift is refused");
+    RES_CHECK(res_run_module_gb(&gi, ilens, iexps, icomps, icfs, NULL,
+                3, 1, 2, NULL, &si) == 0,
+            "a ceiling on inhomogeneous input is refused, since the degree "
+            "it would bound is a sugar degree");
+    /* and the same input without a ceiling is computed as it always was */
+    RES_CHECK(res_run_module_gb(&gi, ilens, iexps, icomps, icfs, NULL,
+                3, 1, 2, NULL, NULL) > 0,
+            "while the same inhomogeneous input without one still computes");
+
+    res_free_module_gb(&ga);
+    res_free_module_gb(&gu);
+    res_free_module_gb(&gi);
 }
 
 /* Bad input must be refused rather than trusted. */
@@ -3346,6 +3753,9 @@ int main(void)
     res_test_syz_of_input_koszul();
     res_test_syz_of_input_catalecticant();
     res_test_syz_of_input_is_a_basis_not_a_minimal_one();
+    res_test_gb_degree_limit();
+    res_test_gb_degree_limit_multigraded();
+    res_test_gb_degree_limit_rejects_bad_scale();
     res_test_resolution_rejects_bad_input();
     res_test_betti_koszul();
     res_test_betti_nonminimal();

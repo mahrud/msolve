@@ -115,6 +115,60 @@ const char *res_strat_name(
         );
 
 /* --------------------------------------------------------------------- *
+ *  Stopping conditions
+ *
+ *  Macaulay2's gb, syz and res ask for less than a complete answer in
+ *  several ways; this is the one the engine can honour today.  A NULL
+ *  res_stop_t asks for everything, which is what every entry point did
+ *  before this existed, and each field switches itself off with a value
+ *  that cannot be meant literally.
+ *
+ *    max_degree  A ceiling on the degree of the Gröbner basis, as one
+ *                multidegree -- res_grading_len(grading) entries, so a
+ *                single integer under the standard grading -- on the
+ *                caller's own scale, not the internally normalized one.
+ *                NULL means no ceiling.
+ *
+ *                A multidegree is *not* what the computation schedules
+ *                by.  msolve selects S-pairs by the single integer
+ *                heft . deg, which is what makes the degree by degree
+ *                schedule terminate, so a multidegree ceiling is honoured
+ *                as its heft: everything of multidegree at most
+ *                max_degree is computed, and so is everything else of no
+ *                greater heft.  That is a coarsening in the safe
+ *                direction, it is what Macaulay2 does to its own
+ *                DegreeLimit before the engine ever sees it
+ *                (degreeToHeft in m2/gb.m2), and under the standard
+ *                grading the two coincide.
+ *
+ *                A truncated basis is a Gröbner basis of nothing in
+ *                particular: it generates the same module only in degrees
+ *                up to the ceiling.  Callers that care must say so.
+ *
+ *                A ceiling needs homogeneous input, and inhomogeneous
+ *                input with one is refused.  What the round loop
+ *                schedules by there is a sugar degree, which can fall --
+ *                md->min_deg_in_first_deg_fall exists to notice it -- so
+ *                a ceiling on it would not mean the basis is complete
+ *                through that degree, which is the only thing a caller
+ *                could want it to mean.
+ *
+ *  A ceiling does not make a computation resumable.  Asking again for
+ *  a larger one recomputes from the input.
+ * --------------------------------------------------------------------- */
+
+typedef struct res_stop_t res_stop_t;
+struct res_stop_t
+{
+    const int32_t *max_degree; /* res_grading_len entries, or NULL */
+};
+
+/* Everything, i.e. what a NULL res_stop_t means. */
+res_stop_t res_stop_none(
+        void
+        );
+
+/* --------------------------------------------------------------------- *
  *  Degrees
  *
  *  Modules are graded by a finitely generated abelian group
@@ -840,6 +894,12 @@ int res_hilbert_invariants(
  *              are normalized internally by subtracting the degree of the
  *              row of least heft; export_module_betti reports that shift.
  *
+ *  stop asks for less than the whole basis; see res_stop_t, of which only
+ *  max_degree means anything here, a plain Gröbner basis computing no
+ *  syzygies to count or rows to project.  The ceiling is stated on the
+ *  caller's scale, i.e. against the row_degs above and not against their
+ *  normalization.  NULL, and a NULL max_degree, ask for everything.
+ *
  *  The output uses the same layout, with bcomp giving the component of
  *  each term of the basis.  All four output arrays are allocated with the
  *  caller supplied mallocp and are released by
@@ -897,6 +957,7 @@ int64_t export_module_f4_blocks(
         const mo_block_t * const blk, /* NULL means one block */
         const res_strat_t *strat,     /* NULL means the default  */
         const res_grading_t *grading, /* NULL means the standard */
+        const res_stop_t *stop,       /* NULL means no limits    */
         const int32_t nr_vars,
         const int32_t nr_rows,
         const int32_t nr_gens,
@@ -926,6 +987,7 @@ int64_t export_module_f4(
         const int32_t mon_order,
         const res_strat_t *strat,     /* NULL means the default  */
         const res_grading_t *grading, /* NULL means the standard */
+        const res_stop_t *stop,       /* NULL means no limits    */
         const int32_t nr_vars,
         const int32_t nr_rows,
         const int32_t nr_gens,
@@ -1056,6 +1118,15 @@ void free_module_frame_result_data(
  *  The differential is the *nonminimal* one: its ranks are the frame
  *  ranks of export_module_frame, not the minimal Betti numbers.
  *
+ *  stop asks for less than the whole thing; see res_stop_t, of which
+ *  only max_degree means anything here:
+ *
+ *    max_degree  a ceiling on the degree of the Gröbner basis the
+ *                syzygies are read off, so on the graph module for
+ *                RES_SYZ_OF_INPUT and on the presentation itself for
+ *                RES_SYZ_OF_GB.  What comes back is then a truncation of
+ *                the complex rather than the complex.
+ *
  *  All six arrays are allocated with mallocp and released by
  *  free_module_resolution_result_data.  The return value is the total
  *  number of terms, or 0 on failure, in which case nothing is allocated.
@@ -1088,6 +1159,7 @@ int64_t export_module_resolution(
         const int32_t mon_order,
         const res_strat_t *strat,     /* NULL means the default  */
         const res_grading_t *grading, /* NULL means the standard */
+        const res_stop_t *stop,       /* NULL means no limits    */
         const int32_t nr_vars,
         const int32_t nr_rows,
         const int32_t nr_gens,

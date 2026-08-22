@@ -214,7 +214,7 @@ static void bench_run(
     const int64_t nterms = export_module_resolution(malloc, &nlv, &ranks,
             &degs, &dlen, &dexp, &dcomp, &dcf,
             in->lens, in->exps, in->comps, cfs, in->rd, BENCH_FC,
-            0 /* drl */, s, NULL, in->nv, in->nr, in->ng, 0 /* no ceiling */,
+            0 /* drl */, s, NULL, NULL /* stop */, in->nv, in->nr, in->ng, 0 /* no ceiling */,
             RES_SYZ_OF_GB, 0 /* the cheap structural check always runs */,
             17, 1, 0, 2, 0);
     o->secs = bench_now() - t0;

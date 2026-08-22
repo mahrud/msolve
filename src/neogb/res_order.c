@@ -64,6 +64,17 @@ res_strat_t res_strat_default(
     return s;
 }
 
+res_stop_t res_stop_none(
+        void
+        )
+{
+    res_stop_t s;
+
+    s.max_degree = NULL;
+
+    return s;
+}
+
 res_strat_t res_strat_of_order(
         const int32_t module_order
         )
