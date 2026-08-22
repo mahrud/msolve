@@ -2649,6 +2649,78 @@ static void res_test_gb_degree_limit_rejects_bad_scale(
     res_free_module_gb(&gi);
 }
 
+/* SyzygyLimit.  The three Koszul relations of (x,y,z) all turn up in the
+ * same round, so the round loop cannot stop after exactly one of them --
+ * the cap on the export is what makes the count come out.  Both halves
+ * matter and this test pins the visible half; that the round loop really
+ * does stop early is what res_test_syz_limit_stops_early checks. */
+static void res_test_syz_limit(
+        void
+        )
+{
+    const int32_t lens[3]  = {1, 1, 1};
+    const int32_t exps[9]  = {1,0,0,  0,1,0,  0,0,1};
+    const int32_t cfs[3]   = {1, 1, 1};
+    const int32_t comps[3] = {1, 1, 1};
+    int32_t lim;
+
+    for (lim = 1; lim <= 5; ++lim) {
+        const int32_t want = lim < 3 ? lim : 3;
+        res_stop_t stop = res_stop_none();
+        res_res_t r;
+        stop.syz_limit = lim;
+
+        res_run_resolution_stop(&r, lens, exps, comps, cfs, NULL,
+                3, 1, 3, 2, RES_SYZ_OF_INPUT, res_strat_p(RES_MORD_POT),
+                NULL, &stop);
+
+        RES_CHECK(r.nlv == 3 && r.ranks[0] == 1 && r.ranks[1] == 3
+                && r.ranks[2] == want,
+                "a syzygy limit reports that many Koszul relations, or all "
+                "of them if it asks for more than there are");
+
+        res_free_resolution(&r);
+    }
+}
+
+/* That the limit is a genuine early stop and not only a cap on the output.
+ * The twisted cubic's syzygy module has a Gröbner basis of three elements,
+ * two in degree 3 and a redundant one in degree 4; asking for two stops in
+ * degree 3, so the degree 4 element is never computed, and the reported
+ * degrees say so. */
+static void res_test_syz_limit_stops_early(
+        void
+        )
+{
+    const int32_t lens[3]  = {2, 2, 2};
+    const int32_t exps[24] = {
+        1,0,1,0,  0,2,0,0,
+        1,0,0,1,  0,1,1,0,
+        0,1,0,1,  0,0,2,0
+    };
+    const int32_t cfs[6]   = {1, RES_FC-1, 1, RES_FC-1, 1, RES_FC-1};
+    const int32_t comps[6] = {1, 1, 1, 1, 1, 1};
+
+    res_stop_t stop = res_stop_none();
+    res_res_t r;
+    stop.syz_limit = 2;
+
+    res_run_resolution_stop(&r, lens, exps, comps, cfs, NULL,
+            4, 1, 3, 2, RES_SYZ_OF_INPUT, res_strat_p(RES_MORD_POT),
+            NULL, &stop);
+
+    RES_CHECK(r.nlv == 3 && r.ranks[2] == 2,
+            "asking for two of the twisted cubic's three syzygies gives two");
+    if (r.nlv == 3 && r.ranks[2] == 2) {
+        /* degs is laid out level by level: 1 + 3 entries come first */
+        RES_CHECK(r.degs[4] == 3 && r.degs[5] == 3,
+                "and they are the two of degree 3, so the degree 4 element "
+                "was never reached");
+    }
+
+    res_free_resolution(&r);
+}
+
 /* Bad input must be refused rather than trusted. */
 static void res_test_resolution_rejects_bad_input(
         void
@@ -3756,6 +3828,8 @@ int main(void)
     res_test_gb_degree_limit();
     res_test_gb_degree_limit_multigraded();
     res_test_gb_degree_limit_rejects_bad_scale();
+    res_test_syz_limit();
+    res_test_syz_limit_stops_early();
     res_test_resolution_rejects_bad_input();
     res_test_betti_koszul();
     res_test_betti_nonminimal();

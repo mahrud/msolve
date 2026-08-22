@@ -426,6 +426,7 @@ static int module_gb_from_input(
         const res_strat_t * const strat,
         const res_grading_t * const grading,
         const res_stop_t * const stop,
+        const int32_t syz_comp_lo,
         const int32_t nr_vars,
         const int32_t nr_rows,
         const int32_t nr_gens,
@@ -734,6 +735,14 @@ static int module_gb_from_input(
         st->max_gb_degree = (deg_t)(h > (int64_t)INT32_MAX ? INT32_MAX : h);
     }
 
+    /* A syzygy limit only means anything where there is an adjoined block
+     * to read relations off, which the caller says by passing its lower
+     * boundary; everywhere else the round loop has nothing to count. */
+    if (stop != NULL && stop->syz_limit > 0 && syz_comp_lo > 0) {
+        st->syz_limit   = stop->syz_limit;
+        st->syz_comp_lo = syz_comp_lo;
+    }
+
     int32_t err = 0;
     bs_t *gb = core_gba(bs, st, &err, (len_t)field_char);
 
@@ -841,7 +850,7 @@ int64_t export_module_f4_blocks(
     *bcf   = NULL;
 
     if (module_gb_from_input(&mi, lens, exps, comps, cfs, row_degs,
-                field_char, mon_order, blk, strat, grading, stop, nr_vars, nr_rows,
+                field_char, mon_order, blk, strat, grading, stop, 0, nr_vars, nr_rows,
                 nr_gens, ht_size, nr_threads, max_nr_pairs, la_option,
                 reduce_gb, info_level)) {
         return 0;
@@ -943,7 +952,7 @@ int64_t export_module_frame(
      * basis would carry redundant elements into level 1 and inflate every
      * level above it. */
     if (module_gb_from_input(&mi, lens, exps, comps, cfs, row_degs,
-                field_char, mon_order, NULL, strat, grading, NULL, nr_vars, nr_rows,
+                field_char, mon_order, NULL, strat, grading, NULL, 0, nr_vars, nr_rows,
                 nr_gens, ht_size, nr_threads, max_nr_pairs, la_option,
                 1 /* reduce */, info_level)) {
         return 0;
@@ -1290,7 +1299,7 @@ static int64_t module_syz_of_input(
     }
 
     if (module_gb_from_input(&mi, lens2, exps2, comps2, cfs2, rdeg,
-                field_char, mon_order, NULL, strat, grading, stop, nr_vars, nr2,
+                field_char, mon_order, NULL, strat, grading, stop, nr_rows, nr_vars, nr2,
                 nr_gens, ht_size, nr_threads, max_nr_pairs, la_option,
                 1 /* reduce */, info_level)) {
         goto cleanup;
@@ -1312,9 +1321,16 @@ static int64_t module_syz_of_input(
         goto cleanup;
     }
 
+    /* The round loop has already stopped on this, so what is left here is
+     * to report no more than was asked for: the basis it stopped with can
+     * hold one or two syzygies past the limit, the last round having
+     * produced several at once. */
+    const int32_t sylimit =
+        (stop != NULL && stop->syz_limit > 0) ? stop->syz_limit : INT32_MAX;
+
     int32_t nsyz = 0;
     int64_t syterms = 0;
-    for (i = 0; i < (int32_t)gb->lml; ++i) {
+    for (i = 0; i < (int32_t)gb->lml && nsyz < sylimit; ++i) {
         const bl_t bi   = gb->lmps[i];
         const hm_t *hm  = gb->hm[bi];
         if (hm == NULL) {
@@ -1524,7 +1540,7 @@ int64_t export_module_resolution(
     /* As for the frame: the lead terms have to be the minimal generators
      * of the module of lead terms, which is what reducing gives. */
     if (module_gb_from_input(&mi, lens, exps, comps, cfs, row_degs,
-                field_char, mon_order, NULL, strat, grading, stop, nr_vars, nr_rows,
+                field_char, mon_order, NULL, strat, grading, stop, 0, nr_vars, nr_rows,
                 nr_gens, ht_size, nr_threads, max_nr_pairs, la_option,
                 1 /* reduce */, info_level)) {
         return 0;
@@ -1686,7 +1702,7 @@ int64_t export_module_betti(
     }
 
     if (module_gb_from_input(&mi, lens, exps, comps, cfs, row_degs,
-                field_char, mon_order, NULL, strat, grading, NULL, nr_vars, nr_rows,
+                field_char, mon_order, NULL, strat, grading, NULL, 0, nr_vars, nr_rows,
                 nr_gens, ht_size, nr_threads, max_nr_pairs, la_option,
                 1 /* reduce */, info_level)) {
         return 0;
@@ -1969,7 +1985,7 @@ res_comp_t *res_comp_new(
     /* reduced, as for the frame: the lead terms have to be the minimal
      * generators of the module of lead terms */
     if (module_gb_from_input(&mi, lens, exps, comps, cfs, row_degs,
-                field_char, mon_order, NULL, strat, grading, NULL, nr_vars, nr_rows,
+                field_char, mon_order, NULL, strat, grading, NULL, 0, nr_vars, nr_rows,
                 nr_gens, ht_size, nr_threads, max_nr_pairs, la_option,
                 1 /* reduce */, info_level)) {
         return NULL;

@@ -339,6 +339,50 @@ start:
     print_round_information_footer(VERBSTREAM, md);
 }
 
+/* How many basis elements lead in an adjoined component, i.e. how many
+ * syzygies the graph module construction has produced so far.
+ *
+ * The lead term decides on its own.  The syzygy entry points order the
+ * original components before the adjoined ones and compare by component
+ * first, so an element whose lead sits above md->syz_comp_lo has every
+ * term there, and that is exactly the statement that it is a relation
+ * among the generators.  res_module.c re-checks every term when it reads
+ * the syzygies off at the end.
+ *
+ * What is counted is bs->lmps, the non-redundant elements update() keeps
+ * current, and not bs->hm: an element whose lead term another element's
+ * lead term divides is dropped before anything is exported, so counting it
+ * here would stop the round loop short of the syzygies the caller would
+ * actually receive.  That list is the same one res_module.c walks, and it
+ * is at most as long as the basis, so this is cheaper than an incremental
+ * count over bs->hm would have been anyway.
+ *
+ * Nothing about this is a claim that the syzygies counted generate the
+ * syzygy module.  They are genuine relations, and stopping here is
+ * stopping early, which is what the caller asked for. */
+static int32_t count_syzygies(
+        const bs_t * const bs,
+        md_t *md
+        )
+{
+    const ht_t * const ht = bs->ht;
+    len_t i;
+    int32_t n = 0;
+
+    for (i = 0; i < bs->lml; ++i) {
+        const hm_t * const hm = bs->hm[bs->lmps[i]];
+        if (hm == NULL) {
+            continue;
+        }
+        if ((int32_t)ht->ev[hm[OFFSET]][ht->cpos] > md->syz_comp_lo) {
+            n++;
+        }
+    }
+    md->syz_seen = n;
+
+    return n;
+}
+
 static int32_t initialize_f4(
         bs_t **lbsp,
         md_t **lmdp,
@@ -395,6 +439,10 @@ static int32_t initialize_f4(
      * through the ceiling and says nothing above it.
      * TODO: make this a command line argument as well */
     md->max_gb_degree = gmd->max_gb_degree > 0 ? gmd->max_gb_degree : INT32_MAX;
+
+    /* The limit is the caller's and comes through the copy; the count is
+     * this run's, and gmd may already have been through one. */
+    md->syz_seen = 0;
 
     /* link tracer into basis */
     if (md->trace_level == LEARN_TRACER) {
@@ -713,6 +761,9 @@ bs_t *core_f4(
         }
         if (!done && md->trace_level != APPLY_TRACER) {
             done = update(bs, md);
+        }
+        if (!done && md->syz_limit > 0) {
+            done = count_syzygies(bs, md) >= md->syz_limit;
         }
 
         print_round_timings(VERBSTREAM, md, rrt, crt);

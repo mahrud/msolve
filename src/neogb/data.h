@@ -489,6 +489,17 @@ struct md_t
     int32_t current_rd;
     int32_t current_deg;
     deg_t max_gb_degree;
+    /* Stop once syz_limit basis elements lead in a component above
+     * syz_comp_lo, which is where the syzygy entry points adjoin the free
+     * module they read relations off.  Position over term with the
+     * original components first makes the lead term decide on its own: an
+     * element leading in an adjoined component has every term there, so
+     * counting is one comparison per non-redundant basis element.  0 means
+     * no limit, which is every path but that one.  syz_seen is the count as
+     * of the last round, kept for the statistics rather than for the test. */
+    int32_t syz_limit;
+    int32_t syz_comp_lo;
+    int32_t syz_seen;
     uint64_t max_bht_size;
     uint64_t max_sht_size;
     uint64_t max_uht_size;

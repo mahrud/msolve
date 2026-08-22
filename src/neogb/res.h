@@ -118,7 +118,7 @@ const char *res_strat_name(
  *  Stopping conditions
  *
  *  Macaulay2's gb, syz and res ask for less than a complete answer in
- *  several ways; this is the one the engine can honour today.  A NULL
+ *  several ways; these are the three the engine can honour today.  A NULL
  *  res_stop_t asks for everything, which is what every entry point did
  *  before this existed, and each field switches itself off with a value
  *  that cannot be meant literally.
@@ -153,14 +153,20 @@ const char *res_strat_name(
  *                through that degree, which is the only thing a caller
  *                could want it to mean.
  *
- *  A ceiling does not make a computation resumable.  Asking again for
- *  a larger one recomputes from the input.
+ *    syz_limit   Stop once this many syzygies of the input generators are
+ *                known, 0 or less meaning no limit.  Only the syzygy
+ *                entry points look at it -- a plain Gröbner basis
+ *                computes no syzygies to count.
+ *
+ *  None of these makes a computation resumable.  Asking again for a
+ *  larger ceiling recomputes from the input.
  * --------------------------------------------------------------------- */
 
 typedef struct res_stop_t res_stop_t;
 struct res_stop_t
 {
     const int32_t *max_degree; /* res_grading_len entries, or NULL */
+    int32_t        syz_limit;  /* <= 0 means no limit  */
 };
 
 /* Everything, i.e. what a NULL res_stop_t means. */
@@ -1118,14 +1124,22 @@ void free_module_frame_result_data(
  *  The differential is the *nonminimal* one: its ranks are the frame
  *  ranks of export_module_frame, not the minimal Betti numbers.
  *
- *  stop asks for less than the whole thing; see res_stop_t, of which
- *  only max_degree means anything here:
+ *  stop asks for less than the whole thing; see res_stop_t.  All three
+ *  fields reach RES_SYZ_OF_INPUT, and what they mean here is:
  *
  *    max_degree  a ceiling on the degree of the Gröbner basis the
  *                syzygies are read off, so on the graph module for
  *                RES_SYZ_OF_INPUT and on the presentation itself for
  *                RES_SYZ_OF_GB.  What comes back is then a truncation of
  *                the complex rather than the complex.
+ *
+ *    syz_limit   stops as soon as that many syzygies are known and
+ *                reports that many.  It is a genuine early stop, not a
+ *                cap on the output: the round loop counts the relations
+ *                the basis has picked up and quits.  A round is always
+ *                finished, so more than syz_limit of them can turn up at
+ *                once, and the extras are dropped rather than reported.
+ *                Only RES_SYZ_OF_INPUT counts anything.
  *
  *  All six arrays are allocated with mallocp and released by
  *  free_module_resolution_result_data.  The return value is the total

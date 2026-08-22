@@ -71,6 +71,7 @@ res_stop_t res_stop_none(
     res_stop_t s;
 
     s.max_degree = NULL;
+    s.syz_limit  = 0;
 
     return s;
 }
