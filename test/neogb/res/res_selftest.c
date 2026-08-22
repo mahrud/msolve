@@ -2721,6 +2721,84 @@ static void res_test_syz_limit_stops_early(
     res_free_resolution(&r);
 }
 
+/* SyzygyRows projects each syzygy onto its first rows and drops the
+ * columns that become zero.  For the Koszul relations of (x,y,z) --
+ * z*e2 - y*e3, z*e1 - x*e3, y*e1 - x*e2 -- keeping one row kills the
+ * first column outright and leaves the other two with a single term
+ * each.  Note the result is deliberately no longer a complex: this is a
+ * submatrix of the syzygy matrix, so d_1 o d_2 is not zero and the test
+ * does not ask for it. */
+static void res_test_syz_rows(
+        void
+        )
+{
+    const int32_t lens[3]  = {1, 1, 1};
+    const int32_t exps[9]  = {1,0,0,  0,1,0,  0,0,1};
+    const int32_t cfs[3]   = {1, 1, 1};
+    const int32_t comps[3] = {1, 1, 1};
+    const int32_t p        = RES_FC;
+
+    /* one row: d_1 unchanged, then z*e1 and y*e1 */
+    const int32_t rlen1[5] = {1, 1, 1,  1, 1};
+    const int32_t rexp1[]  = {
+        1,0,0,   0,1,0,   0,0,1,
+        0,0,1,   0,1,0
+    };
+    const int32_t rcomp1[] = {1, 1, 1,  1, 1};
+    const int32_t rcf1[]   = {1, 1, 1,  1, 1};
+
+    /* two rows: every column keeps something, the first only its e2 term */
+    const int32_t rlen2[6] = {1, 1, 1,  1, 1, 2};
+    const int32_t rexp2[]  = {
+        1,0,0,   0,1,0,   0,0,1,
+        0,0,1,
+        0,0,1,
+        0,1,0, 1,0,0
+    };
+    const int32_t rcomp2[] = {1, 1, 1,  2,  1,  1,2};
+    const int32_t rcf2[]   = {1, 1, 1,  1,  1,  1,p-1};
+
+    res_stop_t s1 = res_stop_none(), s2 = res_stop_none(), s3 = res_stop_none();
+    res_res_t r1, r2, r3;
+    s1.syz_rows = 1;
+    s2.syz_rows = 2;
+    s3.syz_rows = 3;
+
+    res_run_resolution_stop(&r1, lens, exps, comps, cfs, NULL,
+            3, 1, 3, 2, RES_SYZ_OF_INPUT, res_strat_p(RES_MORD_POT),
+            NULL, &s1);
+    RES_CHECK(r1.nlv == 3 && r1.ranks[2] == 2 && r1.nterms == 5,
+            "keeping one syzygy row drops the column supported on the "
+            "other two");
+    if (r1.nlv == 3 && r1.ranks[2] == 2 && r1.nterms == 5) {
+        res_check_differential("the surviving columns are the projections "
+                "of the Koszul relations onto their first coordinate",
+                &r1, 3, rlen1, rexp1, rcomp1, rcf1);
+    }
+    res_free_resolution(&r1);
+
+    res_run_resolution_stop(&r2, lens, exps, comps, cfs, NULL,
+            3, 1, 3, 2, RES_SYZ_OF_INPUT, res_strat_p(RES_MORD_POT),
+            NULL, &s2);
+    RES_CHECK(r2.nlv == 3 && r2.ranks[2] == 3 && r2.nterms == 7,
+            "keeping two syzygy rows keeps every column, one of them with "
+            "a single term");
+    if (r2.nlv == 3 && r2.ranks[2] == 3 && r2.nterms == 7) {
+        res_check_differential("and the entries are the ones of the full "
+                "syzygy matrix, in place", &r2, 3, rlen2, rexp2, rcomp2,
+                rcf2);
+    }
+    res_free_resolution(&r2);
+
+    /* asking for as many rows as there are generators is no restriction */
+    res_run_resolution_stop(&r3, lens, exps, comps, cfs, NULL,
+            3, 1, 3, 2, RES_SYZ_OF_INPUT, res_strat_p(RES_MORD_POT),
+            NULL, &s3);
+    RES_CHECK(r3.nlv == 3 && r3.ranks[2] == 3 && r3.nterms == 9,
+            "a row bound at the number of generators changes nothing");
+    res_free_resolution(&r3);
+}
+
 /* Bad input must be refused rather than trusted. */
 static void res_test_resolution_rejects_bad_input(
         void
@@ -3830,6 +3908,7 @@ int main(void)
     res_test_gb_degree_limit_rejects_bad_scale();
     res_test_syz_limit();
     res_test_syz_limit_stops_early();
+    res_test_syz_rows();
     res_test_resolution_rejects_bad_input();
     res_test_betti_koszul();
     res_test_betti_nonminimal();

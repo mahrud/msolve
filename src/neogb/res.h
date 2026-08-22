@@ -158,6 +158,25 @@ const char *res_strat_name(
  *                entry points look at it -- a plain Gröbner basis
  *                computes no syzygies to count.
  *
+ *    syz_rows    Keep only the first syz_rows rows of the syzygy matrix,
+ *                0 or less meaning all of them.  A syzygy of nr_gens
+ *                generators is a vector in R^nr_gens; this projects it
+ *                onto its first syz_rows coordinates and drops the
+ *                columns that become zero, which is what Macaulay2 wants
+ *                when it computes a Gröbner basis of generators together
+ *                with relations and cares only about the coefficients on
+ *                the generators.  It is an output filter and saves no
+ *                work: pruning the computation itself needs the discarded
+ *                components ordered last, which is the elimination block
+ *                question the module orders do not yet answer.
+ *
+ *                A projected syzygy matrix is a submatrix, so it is no
+ *                longer a complex: d_1 o d_2 is the composite of the
+ *                presentation with only some of the relations and has no
+ *                reason to vanish.  The d o d = 0 verification is
+ *                therefore not run on this path, and callers must not
+ *                expect it to hold.
+ *
  *  None of these makes a computation resumable.  Asking again for a
  *  larger ceiling recomputes from the input.
  * --------------------------------------------------------------------- */
@@ -167,6 +186,7 @@ struct res_stop_t
 {
     const int32_t *max_degree; /* res_grading_len entries, or NULL */
     int32_t        syz_limit;  /* <= 0 means no limit  */
+    int32_t        syz_rows;   /* <= 0 means all rows  */
 };
 
 /* Everything, i.e. what a NULL res_stop_t means. */
@@ -1119,7 +1139,7 @@ void free_module_frame_result_data(
  *  RES_SYZ_OF_INPUT, where d_1 o d_2 = 0 is structural: a column is
  *  reported only once every one of its terms has been seen to sit in the
  *  adjoined components, and that is exactly the statement that its
- *  original components cancel.
+ *  original components cancel.  A row bound breaks that -- see stop below.
  *
  *  The differential is the *nonminimal* one: its ranks are the frame
  *  ranks of export_module_frame, not the minimal Betti numbers.
@@ -1140,6 +1160,13 @@ void free_module_frame_result_data(
  *                finished, so more than syz_limit of them can turn up at
  *                once, and the extras are dropped rather than reported.
  *                Only RES_SYZ_OF_INPUT counts anything.
+ *
+ *    syz_rows    projects each column of d_2 onto the first syz_rows
+ *                generators of F_1 and drops the columns that become
+ *                zero, so ranks[2] can come back smaller.  The result is
+ *                a submatrix of the syzygy matrix and *not* a complex;
+ *                verify is ignored, as it would have to be.  Only
+ *                RES_SYZ_OF_INPUT projects anything.
  *
  *  All six arrays are allocated with mallocp and released by
  *  free_module_resolution_result_data.  The return value is the total

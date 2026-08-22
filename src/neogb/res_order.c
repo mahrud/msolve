@@ -72,6 +72,7 @@ res_stop_t res_stop_none(
 
     s.max_degree = NULL;
     s.syz_limit  = 0;
+    s.syz_rows   = 0;
 
     return s;
 }

@@ -1321,6 +1321,14 @@ static int64_t module_syz_of_input(
         goto cleanup;
     }
 
+    /* Keep only the first syz_rows rows of the syzygy matrix, i.e. only
+     * the terms sitting in the first syz_rows adjoined components.  This
+     * is a projection of each syzygy onto those coordinates, so a column
+     * whose every term is dropped is the zero syzygy and goes with them.
+     * 0 keeps everything, and so does any bound at or above nr_gens. */
+    const int32_t syrows =
+        (stop != NULL && stop->syz_rows > 0 && stop->syz_rows < nr_gens)
+        ? stop->syz_rows : nr_gens;
     /* The round loop has already stopped on this, so what is left here is
      * to report no more than was asked for: the basis it stopped with can
      * hold one or two syzygies past the limit, the last round having
@@ -1344,18 +1352,23 @@ static int64_t module_syz_of_input(
          * generators, which is why the syzygies of the input need no
          * separate d_1 o d_2 = 0 check. */
         int pure = 1;
+        int32_t klen = 0;
         for (t = 0; t < (int64_t)hm[LENGTH]; ++t) {
-            if ((int32_t)bht->ev[hm[OFFSET+t]][bht->cpos] <= nr_rows) {
+            const int32_t c = (int32_t)bht->ev[hm[OFFSET+t]][bht->cpos];
+            if (c <= nr_rows) {
                 pure = 0;
                 break;
             }
+            if (c - nr_rows <= syrows) {
+                klen++;
+            }
         }
-        if (!pure) {
+        if (!pure || klen == 0) {
             continue;
         }
         syidx[nsyz] = bi;
-        sylen[nsyz] = (int32_t)hm[LENGTH];
-        syterms    += (int64_t)hm[LENGTH];
+        sylen[nsyz] = klen;
+        syterms    += (int64_t)klen;
         nsyz++;
     }
 
@@ -1419,13 +1432,19 @@ static int64_t module_syz_of_input(
     }
 
     /* d_2 is the syzygies, with the adjoined components folded back onto
-     * the generators they index */
+     * the generators they index.  The generator degree is read off the
+     * lead term even when syrows drops it: the input is graded, so every
+     * term of a syzygy carries the same heft degree, component shifts
+     * included, and that is what the projection preserves. */
     for (i = 0; i < nsyz; ++i) {
         const hm_t *hm = gb->hm[syidx[i]];
         dg[cg++] = (int32_t)bht->hd[hm[OFFSET]].deg;
         dl[cl++] = sylen[i];
-        for (t = 0; t < sylen[i]; ++t) {
+        for (t = 0; t < (int64_t)hm[LENGTH]; ++t) {
             const exp_t * const ev = bht->ev[hm[OFFSET+t]];
+            if ((int32_t)ev[bht->cpos] - nr_rows > syrows) {
+                continue;
+            }
             for (j = 1; j <= nr_vars; ++j) {
                 de[ce++] = (int32_t)ev[j];
             }
