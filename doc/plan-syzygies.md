@@ -357,7 +357,7 @@ is a lie on any machine that is not the build machine.
 | **M3** | **Done.** `res_frame.c`: `res_frame_new` / `res_frame_init` / `res_frame_next_level` / `res_frame_complete`, frame ranks via `res_frame_betti`, and the `export_module_frame` C entry point. `res_module.c`'s validate-import-F4 preamble is now shared by both entry points as `module_gb_from_input`. |
 | **M4** | **Done.** `res_diff.c`: `res_diff_new` / `res_diff_init` / `res_diff_compute` / `res_diff_verify`, one Macaulay matrix per (level, degree) with a parallel multiplier row. `export_module_resolution` in `res_module.c` covers both `RES_SYZ_OF_GB` and `RES_SYZ_OF_INPUT` and, with `max_level = 2`, is the single syzygy matrix. Cross-checked in Macaulay2 by `test/neogb/res/res_reference.m2`. |
 | **M5** | **Done.** `res_betti.c`: `res_betti_new` / `res_betti_minimalize` / `res_betti_pdim` / `res_betti_reg` / `res_hilbert_invariants`, and the `export_module_betti` C entry point. Minimal Betti numbers by rank extraction, plus the Hilbert numerator (Macaulay2's `poincare`), projective dimension, regularity, Krull dimension and degree. Fixing the frame's block order is part of this milestone; see the notes. |
-| **M7** | **Partly done:** the incremental half. `res_comp_t` in `res_module.c` is a resolution kept alive — `res_comp_new` / `res_comp_free` / `res_comp_nlevels` / `res_comp_rank` / `res_comp_degrees` / `res_comp_degshift` / `res_comp_is_complete` / `res_comp_differential`, with `res_diff_compute_thru` doing the lazy prefix. Macaulay2 drives it as an ordinary `ResolutionComputation` through `rawMsolveResolution` and the existing `rawResolutionGetFree` / `rawResolutionGetMatrix`, and the `Msolve` package wraps it as `msolveResolution`. What is left of M7 is prune-to-minimal. See the notes. |
+| **M7** | **Done.** `res_comp_t` in `res_module.c` is a resolution kept alive — `res_comp_new` / `res_comp_free` / `res_comp_nlevels` / `res_comp_rank` / `res_comp_degrees` / `res_comp_degshift` / `res_comp_is_complete` / `res_comp_differential`, with `res_diff_compute_thru` doing the lazy prefix. Macaulay2 drives it as an ordinary `ResolutionComputation` through `rawMsolveResolution` and the existing `rawResolutionGetFree` / `rawResolutionGetMatrix`, and the `Msolve` package wraps it as `msolveResolution`. Prune-to-minimal is `complex MsolveResolution` plus `Complexes`' own `minimize`; see the notes. |
 | **M6** | **Done.** `res_grading_t` in `res.h` is the flat description a caller hands in and `res_dgrp_of_grading` turns into the engine's degree group; every entry point takes one and `NULL` is the standard grading. `ht->vwt` carries the variable weights so the Gröbner basis is computed in the *heft* order the grading induces, `res_dbkt_t` in `res_grading.c` buckets multidegrees through the group's own hash and comparison, and `res_betti.c` extracts ranks blocked by multidegree, reporting both the heft table and the multigraded one through `res_mtable_t`. See the notes. |
 | **Orders** | **Done.** `res_strat_t` in `res.h` and `res_order.c`: base order (POT/TOP), component direction (up/down) and lift (Schreyer), threaded from the C entry points to `res_diff_cmp_mon`. `test/neogb/res/res_bench_strategy.c` measures them. The default is unchanged; see the notes for the measurement and why. |
 | **M8, M9** | Not started. M9 is the option surface Macaulay2's `gb`/`syz`/`res` expect; see the notes. |
@@ -577,6 +577,29 @@ of that, which is correct because a block only ever reads levels below it.
 `res_dpoly_alloc` clears its slot first so the second pass does not leak the
 first one's columns. The handle itself survives, so a Ctrl-C costs the work since
 the last completed level and nothing else.
+
+**Prune to minimal is Macaulay2's job, and that is the point.** The milestone
+asks for the minimal complex, and the cheapest way to get it is not to write a
+minimalizer in C: `complex MsolveResolution` in the `Msolve` package
+materializes every differential and hands back an ordinary `Complex`, and
+`Complexes`' `minimize` does the rest. That method is deliberately the one
+place the laziness is given up — `C_i` and `length C` stay free, and nothing
+else calls it implicitly.
+
+What this buys is not a fast path but a *check*. Rank extraction (M5) reports
+minimal Betti numbers without ever constructing a minimal generating set, which
+makes it the one output in this engine with no independent witness on the C
+side. Minimalizing the materialized complex is that witness, and it shares no
+code with rank extraction at all. `res_reference.m2` now runs the three-way
+comparison on every M7 example — `betti minimize complex C`, Macaulay2's
+`minimalBetti`, and `unpackMsolveBetti rawMsolveMinimalBetti` — and all three
+agree, including on the rank-two module with a shifted row, where msolve's
+nonminimal resolution (2,2) and Macaulay2's (2,3,1) genuinely differ.
+
+One caveat worth stating where someone will hit it: minimizing a complex
+truncated by `LengthLimit` is right below the cut and wrong at it. The minimal
+rank at level n depends on what cancels against level n+1, and a truncated
+complex has not seen it.
 
 **One thing to expect and not mistake for a bug**: the ranks reported here are
 the frame's, and the frame is built from the Gröbner basis, which depends on the

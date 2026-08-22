@@ -218,6 +218,15 @@ for I in {ideal(z^2, y^2*z, y^3),
 
 needsPackage "Msolve";
 
+-- rank extraction (M5) never builds a minimal complex, so the only
+-- independent check on it from this side is to build one and compare.
+-- Neither of these is exported: rawMsolveMinimalBetti is Core's raw
+-- interface to export_module_betti, unpackMsolveBetti the Msolve package's
+-- reader for the flat array it returns.
+rawM2 = value Core#"private dictionary"#"raw";
+rawMsolveMinimalBetti = value Core#"private dictionary"#"rawMsolveMinimalBetti";
+unpackMsolveBetti = value Msolve#"private dictionary"#"unpackMsolveBetti";
+
 reportResolution = (name, M) -> (
     C := msolveResolution M;
     n := length C;
@@ -238,6 +247,20 @@ reportResolution = (name, M) -> (
     print("   order free   : " | toString sameUpDown);
     print("   M2 nonminimal: " | toString new HashTable from
         betti res(coker M, Strategy => Nonminimal, LengthLimit => 8));
+    -- Prune to minimal.  `complex C` materializes every differential -- the
+    -- opposite of what the live handle is for, and the reason this lives in a
+    -- reference script rather than anywhere on a hot path -- and `minimize`
+    -- turns the nonminimal resolution into the minimal one.  The table that
+    -- comes out has to agree with two things it shares no code with:
+    -- Macaulay2's own minimalBetti, and msolve's rank extraction, which reads
+    -- the same numbers off the ranks of the scalar parts of the differentials
+    -- without ever building a minimal complex.  That second agreement is the
+    -- point of the check -- it is M5 cross-examined by M7.
+    minC := betti minimize complex C;
+    print("   minimal      : " | toString new HashTable from minC);
+    print("   = M2 minimal : " | toString (minC == minimalBetti coker M));
+    print("   = rank extr. : " | toString (minC ==
+            unpackMsolveBetti rawMsolveMinimalBetti(rawM2 M, 0, 1, 0)));
     );
 
 use Q;  -- ZZ/p[x,y,z]
