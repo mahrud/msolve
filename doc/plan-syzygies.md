@@ -360,9 +360,10 @@ is a lie on any machine that is not the build machine.
 | **M7** | **Done.** `res_comp_t` in `res_module.c` is a resolution kept alive — `res_comp_new` / `res_comp_free` / `res_comp_nlevels` / `res_comp_rank` / `res_comp_degrees` / `res_comp_degshift` / `res_comp_is_complete` / `res_comp_differential`, with `res_diff_compute_thru` doing the lazy prefix. Macaulay2 drives it as an ordinary `ResolutionComputation` through `rawMsolveResolution` and the existing `rawResolutionGetFree` / `rawResolutionGetMatrix`, and the `Msolve` package wraps it as `msolveResolution`. Prune-to-minimal is `complex MsolveResolution` plus `Complexes`' own `minimize`; see the notes. |
 | **M6** | **Done.** `res_grading_t` in `res.h` is the flat description a caller hands in and `res_dgrp_of_grading` turns into the engine's degree group; every entry point takes one and `NULL` is the standard grading. `ht->vwt` carries the variable weights so the Gröbner basis is computed in the *heft* order the grading induces, `res_dbkt_t` in `res_grading.c` buckets multidegrees through the group's own hash and comparison, and `res_betti.c` extracts ranks blocked by multidegree, reporting both the heft table and the multigraded one through `res_mtable_t`. See the notes. |
 | **Orders** | **Done.** `res_strat_t` in `res.h` and `res_order.c`: base order (POT/TOP), component direction (up/down) and lift (Schreyer), threaded from the C entry points to `res_diff_cmp_mon`. `test/neogb/res/res_bench_strategy.c` measures them. The default is unchanged; see the notes for the measurement and why. |
-| **M8, M9** | Not started. M9 is the option surface Macaulay2's `gb`/`syz`/`res` expect; see the notes. |
+| **M8** | Not started. |
+| **M9** | Started. `res_stop_t` carries the three stops msolve now honours — a degree ceiling (`DegreeLimit`, stated as a multidegree, honoured as its heft), a syzygy count (`SyzygyLimit`, a genuine early stop) and a row bound (`SyzygyRows`, an output filter) — reachable from Macaulay2 through `msolveGB` and `msolveSyzygy`. None of them is resumable, so none is wired into `msolveGBHook`. Still open: `Hilbert`, `ChangeMatrix`, the remaining stop conditions, and continuing a truncated computation (proposals 2 and 3 below). The notes carry the option-by-option verdict for `gb`, `syz`, `res`, `saturate`, `kernel` and `minimalPrimes`. |
 
-Verification in place: `neogb_res_selftest` (515 checks, run by `make check`), the
+Verification in place: `neogb_res_selftest` (548 checks, run by `make check`), the
 64 pre-existing diff tests still pass, and a cyclic-8 Gröbner basis is byte-identical
 to the pristine 0.10.1 baseline with no measurable slowdown.
 `test/neogb/res/res_reference.m2` is the Macaulay2 script every reference number in the
@@ -824,20 +825,23 @@ tables for `gb`, `syz` and `res`. Between them the four module entry points acce
 `max_level`, `syz_of`, `minimal`, `verify`, `ht_size`, `nr_threads`, `max_nr_pairs`,
 `la_option`, `reduce_gb` and `info_level` — and nothing else.
 
-The single structural fact behind most of the table: **msolve's F4 has no stop
-conditions.** The round loop in `f4.c` runs a degree at a time until the pair set is
-empty; there is no early exit, no partial result, and no way to ask for one. So
+The single structural fact behind most of the table: **msolve's F4 had no stop
+conditions.** The round loop in `f4.c` ran a degree at a time until the pair set was
+empty; there was no early exit, no partial result, and no way to ask for one. So
 `BasisElementLimit`, `CodimensionLimit`, `PairLimit`, `StopWithMinimalGenerators`,
 `SubringLimit` and `SyzygyLimit` are all the same piece of work — a stop-condition
 mechanism in the round loop plus a way to report that the result is partial — not six
-independent features. Note `max_nr_pairs` is *not* one of them: it sets `st->mnsel`,
+independent features. Two of them now exist (`res_stop_t`, below): a degree ceiling
+and a syzygy count. The rest still do not, and none of them is *resumable*, which is
+a separate piece of work again. Note `max_nr_pairs` is *not* one of them: it sets `st->mnsel`,
 the most pairs selected in a single round (`symbol.c:268`), which is a batching knob.
 Mapping `PairLimit` onto it would silently return a complete basis computed slowly
 instead of a partial one.
 
 Ranked by value over cost:
 
-1. **`DegreeLimit` / `HardDegreeLimit`.** The cheapest, because both loops are already
+1. **`DegreeLimit` / `HardDegreeLimit`.** *(`DegreeLimit` done; `HardDegreeLimit`, which
+   additionally discards above the ceiling, is not.)* The cheapest, because both loops are already
    degree-driven: `symbol.c` selects the pairs of minimal degree, and `res_diff_compute`
    is scheduled one `(level, degree)` at a time. A ceiling is a `break`, and the
    truncated-frame bookkeeping `export_module_betti` already does for `max_level`
@@ -853,9 +857,9 @@ Ranked by value over cost:
    then discards precisely the elements a change matrix would keep. This is blocked on
    the same missing capability as the syzygy ordering (below), so the two should be done
    together.
-4. **`SyzygyRows`.** Free as an output filter, since the retained rows are adjoined
-   components; making it prune *work* rather than output needs those components ordered
-   last, which is again the elimination-block question.
+4. **`SyzygyRows`.** *(Done, as an output filter.)* Free as an output filter, since the
+   retained rows are adjoined components; making it prune *work* rather than output needs
+   those components ordered last, which is again the elimination-block question.
 
 And the one that keeps coming back: `res.h` refuses to combine an elimination block
 with a module order. That refusal is what forces `RES_SYZ_OF_INPUT` onto POT — `TOP`
@@ -871,6 +875,207 @@ becomes available, and `SyzygyRows` can prune work.
 `msolveDefaultOptions`, including the ones that are M2-side or meaningless for F4
 (`Algorithm`, `MaxReductionCount`, `ParallelizeByDegree`, `SortStrategy`,
 `StopBeforeComputation`).
+
+### The option tables, function by function
+
+Read off `options gb` and friends in this Macaulay2, not from the manual. Three
+verdicts are used below: **yes** means msolve can answer it as msolve is
+structured today or with work proportional to the option; **stop** means it needs
+the one missing mechanism, a stop condition in the F4 round loop with a way to
+report that the answer is partial; **no** means it is a Macaulay2-side or
+strategy-side notion that F4 has no counterpart for, and the right thing is to
+leave it to Macaulay2.
+
+**`gb`** — the source of most of it.
+
+| Option | Verdict | Note |
+|---|---|---|
+| `DegreeLimit` | **done** | The cheapest of the family, and the one that is in: `res_stop_t`'s `max_degree`, which is the `md->max_gb_degree` check that was already there (`symbol.c:231`) and had been hardwired off (`f4.c:392`). Stated as a multidegree, honoured as its heft. Not resumable — see the continuation section below. |
+| `HardDegreeLimit` | **stop** | Same mechanism. The difference is Macaulay2's, not msolve's: it is part of the cache key, so it identifies a different computation rather than a stopping point on this one. |
+| `Hilbert` | **yes** | The one option that makes existing computations *faster*. M5 already produces the numerator; consuming one means stopping a degree's reduction once the predicted number of new elements has appeared. |
+| `ChangeMatrix` | **yes** | Half implemented — the graph module already carries each basis element in terms of the input. Blocked on the elimination-block-with-module-order question, so do it with `SyzygyRows`. |
+| `Syzygies`, `SyzygyRows` | **done** | `RES_SYZ_OF_INPUT` is this. `SyzygyRows` is `res_stop_t`'s `syz_rows`, free as an output filter; making it prune *work* still needs the adjoined components ordered last. The projection is a submatrix, so it is no longer a complex. |
+| `BasisElementLimit` | **stop** | A count checked in `update`. |
+| `SyzygyLimit` | **done** | `res_stop_t`'s `syz_limit`, counted in the round loop off the lead term alone. This is the one member of the family that did get its stop condition. |
+| `PairLimit` | **stop** | Note this is **not** `max_nr_pairs`, which is `st->mnsel`, the batching knob for one round (`symbol.c:268`). Mapping it there returns a complete basis computed slowly instead of a partial one. |
+| `CodimensionLimit` | **stop** | Needs the codimension of the lead-term ideal as the basis grows, which is a Hilbert-side computation msolve can do but does not do incrementally. |
+| `SubringLimit` | **stop** | Counts elements in the subring the elimination block picks out; cheap once the loop can stop, and cheaper still now that block orders are general. |
+| `StopWithMinimalGenerators` | **stop** | The same mechanism plus a minimality test. |
+| `StopBeforeComputation` | **yes** | Trivial once a computation handle exists at all: build it, run nothing. It is the natural first user of the handle, and `gbSnapshot` is exactly this. |
+| `GBDegrees` | **yes** | Per-variable weights for the degree used in pair selection. `ht->vwt` already carries variable weights for the heft order M6 needed; this is the same field under a different name. |
+| `Algorithm`, `MaxReductionCount`, `Strategy` | **no** | Choices among Macaulay2's own engines and its reduction bookkeeping. F4 is the answer to `Algorithm`, not a consumer of it. |
+
+**`syz`** — `options syz` is `gb`'s table minus `Hilbert`, `ChangeMatrix`,
+`Syzygies`, `CodimensionLimit`, `SubringLimit` and `StopWithMinimalGenerators`.
+Everything above transfers unchanged; `syz` is `gb(…, Syzygies => true)` with the
+same computation object underneath, which is why it must share whatever handle
+`gb` gets.
+
+**`res`** — `LengthLimit` is **done** (`max_level`, and `msolveResolution`'s
+option). `DegreeLimit` and `HardDegreeLimit` are **yes** and are the cheapest
+thing on this whole list, because `res_diff_compute_thru` is already scheduled
+one `(level, degree)` at a time and already has `rd->thru` to record how far it
+got — a degree ceiling is one more comparison in the same loop, and the
+truncated-frame bookkeeping `export_module_betti` does for `max_level` transfers
+directly. `PairLimit` and `SyzygyLimit` are **stop**, and they bite in the
+Gröbner basis underneath rather than in the frame. `StopBeforeComputation` is
+**yes** and nearly free: `res_comp_new` already stops after the frame.
+`SortStrategy` and `ParallelizeByDegree` are **no** — the first is Macaulay2's
+own frame-sorting choice, and the second names a parallelization msolve does not
+have, its threading being inside a block rather than across degrees.
+
+**`saturate`** — `Strategy => Msolve` already routes to F4SAT, with the caveat
+that F4SAT wants a prime between 2^16 and 2^31. Of its options, `DegreeLimit`,
+`PairLimit` and `BasisElementLimit` are the same **stop** mechanism reaching the
+saturation loop rather than the plain one; `MinimalGenerators` is **no**, being
+Macaulay2 trimming the answer afterwards.
+
+**`kernel`** — `SubringLimit` and `DegreeLimit` are **stop**, and both are
+really `gb` options in disguise: a kernel is an elimination, and msolve already
+serves it through `msolveEliminate` and the `(kernel, RingMap)` hook. Nothing
+here is new work beyond `gb`'s.
+
+**`minimalPrimes`** — **no**, at the level of the option table. msolve has no
+primary decomposition and no factorization; what it can do is make the primitives
+underneath faster, which the existing hooks already do. The one entry worth a
+second look is `CodimensionLimit`, which Macaulay2 passes down to its own
+strategies; there is no msolve-side counterpart until `gb` has one.
+
+### Continuing a truncated computation
+
+Macaulay2 does not ask for a partial Gröbner basis and then ask again for a
+bigger one. It asks *the same computation* to go further, and the difference
+matters, because the front end has already decided what identifies a
+computation. `gb.m2:317-347` is the whole protocol:
+
+```
+G := gbGetPartialComputation(m, type);   -- m.cache#type, type = gbTypeCode opts
+G  = G ?? new GroebnerBasis from (m, type, opts);
+if isComputationDone rawStatus1 raw G then return G;
+rawGBSetStop(G.RawComputation, …, degreeToHeft opts.DegreeLimit, …);
+rawStartComputation G.RawComputation;   -- "start or continue the computation"
+```
+
+Two things to read off it. The cache key `gbTypeCode` is
+`(SyzygyRows, Syzygies, HardDegreeLimit)` and **does not contain `DegreeLimit`**
+— that is precisely what makes `gb(m, DegreeLimit => d1)` followed by
+`gb(m, DegreeLimit => d2)` land on the same object. And a truncated run must
+report `COMP_DONE_DEGREE_LIMIT` rather than `COMP_DONE`, or the
+`isComputationDone` line short circuits and the second call returns the first
+answer unchanged.
+
+So the shape msolve has to present is not "a function with a degree argument"
+but a handle, and M7 already built one of those: `res_comp_t` is msolve state
+kept alive across Macaulay2 calls, with a `thru` marker, a lazily extended
+prefix, and a finalizer on the Macaulay2 side. A `gb_comp_t` is the same object
+for the F4 round loop.
+
+**What is in the way.** `core_f4` (`f4.c:669`) is deliberately one call:
+
+* `initialize_f4` (`f4.c:342`) allocates the pair set `md->ps` and the secondary
+  hash table `md->ht` into a *local* `md` copied from `gmd`;
+* the round loop runs until the pair set is empty;
+* `finalize_f4` (`f4.c:648`) hands the tracer back to `gmd` and calls
+  `free_local_data`, and `free_meta_data` (`meta_data.c:66`) frees both
+  `md->ps` and `md->ht`. **The pair set does not survive the call.**
+* Worse, `reduce_final_basis` (`f4.c:568`) does not decorate the basis, it
+  *rebuilds* it: `free_basis_elements(bs)`, then
+  `convert_sparse_matrix_rows_to_basis_elements`, then
+  `bs->ld = bs->lml = mat->np` and `lmps[i] = i`. Redundant elements are dropped
+  and everything is renumbered. Since `spair_t` is `(lcm, gen1, gen2, deg, type)`
+  with `gen1`/`gen2` basis indices and `lcm` a `bs->ht` index, a pair set that
+  survived this would point at the wrong elements. **A reduced basis and a
+  resumable one are different objects.**
+
+Three proposals, cheapest first. They are not exclusive: the first is a
+stepping stone to the third and can ship on its own.
+
+**1. Recompute, and only expose the ceiling. — done.** Delete the `TODO` at
+`f4.c:392`, thread `max_gb_degree` in from the entry points, and let a second
+request with a larger `d2` throw the first computation away and rerun from the
+input. Correct by construction — the result is whatever a fresh truncated run
+gives — and it touches nothing but a parameter. The cost is redoing degrees up
+to `d1`, and it is much smaller than it looks: F4's work is concentrated in the
+top degrees, so rerunning to `d2` is within a small constant of computing to
+`d2` outright, and that constant improves as `d2 - d1` grows. There is
+precedent for "recompute but cheaply" in this codebase already — the
+`LEARN_TRACER` / `APPLY_TRACER` pair replays one prime's reduction schedule at
+another. Ship this first, and measure the waste before building anything more.
+
+This is what `res_stop_t` is; see "What the three stops are" below.
+
+**2. Keep the pair set; export from a copy.** Split `core_f4` into
+`gb_comp_new` (everything `initialize_f4` does, held in a handle),
+`gb_comp_run_thru(c, d)` (set `max_gb_degree = d`, run the round loop, return
+whether it stopped on an empty pair set or on the ceiling) and `gb_comp_free`.
+`finalize_f4` never runs until the handle is released. The one real design
+decision is the basis: the resumable state is the *unreduced* basis, so
+answering `gens gb` means running `process_redundant_elements` and
+`reduce_final_basis` on a **copy**, which is a basis copy per query on top of a
+computation whose rounds dominate it. `copy_basis_mod_p` already exists for the
+modular path; a same-prime `copy_basis` is the missing piece and is the smaller
+half of this proposal. Everything else in the local `md` is scalars and
+statistics.
+
+**3. Wire it to Macaulay2's protocol.** With (2) in hand, the interface work is
+a `Computation` subclass in `e/interface/msolve.cpp` next to the existing
+`rawMsolveResolution` plumbing: `set_stop_conditions` records the degree
+ceiling, `start_computation` calls `gb_comp_run_thru`, `status` returns
+`COMP_DONE` or `COMP_DONE_DEGREE_LIMIT`, and `get_gb` returns the reduced copy.
+The lifetime question is already answered — M7's `intern_res` installs a
+finalizer through `our_gc_cleanup` and nothing msolve allocated is ever handed
+to the collector — and so is the interrupt question: a `SIGINT` mid-round leaves
+the basis and pair set consistent as of the last completed round, exactly as
+`res_diff_compute_thru` leaves levels at or below `rd->thru` untouched.
+
+**Two things to settle before any of this.** Degree truncation is only a
+statement about a *homogeneous* computation: for inhomogeneous input the round
+loop's degree is a sugar degree, `md->min_deg_in_first_deg_fall` exists precisely
+because it can fall, and "complete through degree d" is not true of the result.
+msolve already computes `st->homogeneous`; a degree limit on inhomogeneous input
+should be refused rather than silently mean something else. *(Settled: it is
+refused, in `module_gb_from_input`.)* And the same handle has to serve `syz`,
+since Macaulay2 keys the two on one cache entry — which is another reason
+`ChangeMatrix` and `SyzygyRows` belong in the same piece of work.
+
+### What the three stops are
+
+`res_stop_t` in `res.h` is proposal 1 above, plus the two syzygy bounds that
+came for free alongside it. A `NULL` `res_stop_t` is what every entry point did
+before it existed, so the unconstrained path is unchanged by construction; the
+selftest's 500-odd pre-existing checks pass all three of them as `NULL`.
+
+* **`max_degree`** is a ceiling on the F4 round loop, and the mechanism was
+  already there: `symbol.c:231` refuses to select a degree above
+  `md->max_gb_degree`, which had been hardwired to `INT32_MAX` at `f4.c:392`
+  behind a `TODO`. Because `core_gba` calls `core_f4`, the one change covers
+  the ideal and module paths together. It is stated as a **multidegree** and
+  honoured as its heft, since heft is what the schedule counts up — the same
+  coarsening `degreeToHeft` applies before Macaulay2's own engine sees a
+  `DegreeLimit`. A ceiling at or below the ambient module's degree shift, or
+  one on inhomogeneous input, is refused rather than answered.
+* **`syz_limit`** is a genuine early stop rather than a cap on the output, and
+  cheaply so. Under POT-down the lead term of a graph module element decides
+  on its own whether the element is a syzygy — an element leading above
+  `nr_rows` has *every* term there — so counting the relations a round produced
+  is one comparison per new basis element (`count_syzygies` in `f4.c`, called
+  from the round loop after `update`). A round is always finished, so more
+  than `syz_limit` relations can appear at once; the extras are discarded.
+* **`syz_rows`** is an output filter, as the M9 ranking predicted: it projects
+  each syzygy onto the first `syz_rows` generators and drops the columns that
+  go to zero. Making it prune *work* still needs the discarded components
+  ordered last, which is the elimination-block question. Note the result is a
+  submatrix of the syzygy matrix and therefore **not a complex** — `d_1 ∘ d_2`
+  is the presentation composed with only some of the relations — so the
+  `verify` flag is not run on that path.
+
+Reachable from Macaulay2 as `msolveGB(…, DegreeLimit => d)` and
+`msolveSyzygy(…, SyzygyLimit => n, SyzygyRows => r, DegreeLimit => d)`, through
+`rawMsolveGB` and `rawMsolveSyzygy`. Deliberately *not* wired into
+`msolveGBHook`: `gb`'s protocol above requires a truncated run to report
+`COMP_DONE_DEGREE_LIMIT` so the next call continues it, and nothing here can,
+so routing `gb(m, DegreeLimit => d)` to msolve would cache a partial basis as a
+complete one. That needs proposal 2.
 
 ## Milestones
 
